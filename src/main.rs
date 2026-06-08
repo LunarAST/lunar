@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 /// LunarAST CLI - Static contract extraction and comparison
 #[derive(Parser)]
@@ -46,7 +47,6 @@ struct RouteEntry {
 }
 
 impl RouteEntry {
-    /// Convert segments to standard path string: /literal/{param}/*
     fn to_path(&self) -> String {
         let mut path = String::new();
         for seg in &self.segments {
@@ -69,7 +69,6 @@ impl RouteEntry {
         path
     }
 
-    /// Unique key for comparison: method + path
     fn key(&self) -> String {
         format!("{} {}", self.method, self.to_path())
     }
@@ -81,27 +80,68 @@ struct ActualJson {
     consumed: Vec<RouteEntry>,
 }
 
-// ---------- Mock adapter outputs ----------
+// ---------- Adapter process management ----------
 
-fn mock_adapter_output() -> String {
-    // Simulates scanning the original project
-    r#"{"method":"GET","segments":[{"type":"literal","value":"healthz"}],"source_file":"src/main.rs","line_number":10,"extraction_method":"ast"}
-{"method":"POST","segments":[{"type":"literal","value":"api"},{"type":"literal","value":"v1"},{"type":"parameter","name":"userId","raw_constraint":"\\d+"}],"source_file":"src/main.rs","line_number":20,"extraction_method":"ast"}
-{"_lunar":{"status":"success","count":2}}
-"#
-    .to_string()
+/// Find an adapter binary by name in PATH.
+fn find_adapter(name: &str) -> Option<String> {
+    // First, check next to the current executable (development convenience)
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let local_path = exe_dir.join(name);
+            if local_path.exists() {
+                return Some(local_path.to_string_lossy().to_string());
+            }
+        }
+    }
+    // Then, check PATH
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let candidate = Path::new(dir).join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
 }
 
-fn mock_modified_output() -> String {
-    // Simulates the project after some code changes:
-    // - removed GET /healthz
-    // - added GET /api/v2/orders
-    // - changed POST /api/v1/{userId} to PUT /api/v1/{userId}
-    r#"{"method":"PUT","segments":[{"type":"literal","value":"api"},{"type":"literal","value":"v1"},{"type":"parameter","name":"userId","raw_constraint":"\\d+"}],"source_file":"src/main.rs","line_number":20,"extraction_method":"ast"}
-{"method":"GET","segments":[{"type":"literal","value":"api"},{"type":"literal","value":"v2"},{"type":"literal","value":"orders"}],"source_file":"src/main.rs","line_number":30,"extraction_method":"ast"}
-{"_lunar":{"status":"success","count":2}}
-"#
-    .to_string()
+/// Run the adapter for the current project and return the parsed routes.
+fn run_adapter() -> Result<Vec<RouteEntry>> {
+    let project_dir = std::env::current_dir()?;
+    let project_dir_str = project_dir.to_string_lossy().to_string();
+
+    // Detect project language and find appropriate adapter.
+    // For now, we check for Cargo.toml to detect Rust projects.
+    // Future: support other languages via config or auto-detection.
+    let adapter_name = if project_dir.join("Cargo.toml").exists() {
+        "lunar-extract-rust"
+    } else {
+        anyhow::bail!(
+            "Could not detect project language. Currently supported: Rust (Cargo.toml found)."
+        );
+    };
+
+    let adapter_path = find_adapter(adapter_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Adapter '{}' not found in PATH. Install it first.\n\
+             For Rust/Axum: cargo install lunar-extract-rust\n\
+             Or build from source: https://github.com/LunarAST/lunar-extract-rust",
+            adapter_name
+        )
+    })?;
+
+    // Spawn adapter subprocess
+    let output = Command::new(&adapter_path)
+        .arg(&project_dir_str)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    parse_routes(&stdout)
 }
 
 // ---------- Core: parse LDJSON output into routes ----------
@@ -118,6 +158,9 @@ fn parse_routes(ldjson: &str) -> Result<Vec<RouteEntry>> {
             let marker: serde_json::Value = serde_json::from_str(line)?;
             if marker["_lunar"]["status"] == "success" {
                 count_from_marker = Some(marker["_lunar"]["count"].as_u64().unwrap() as usize);
+            } else if marker["_lunar"]["status"] == "error" {
+                let msg = marker["_lunar"]["message"].as_str().unwrap_or("unknown error");
+                anyhow::bail!("Adapter reported error: {}", msg);
             }
             continue;
         }
@@ -140,9 +183,7 @@ fn parse_routes(ldjson: &str) -> Result<Vec<RouteEntry>> {
 
 fn scan() -> Result<()> {
     println!("Scanning project...");
-    let ldjson_output = mock_adapter_output();
-    let routes = parse_routes(&ldjson_output)?;
-
+    let routes = run_adapter()?;
     println!("✓ Count verified: {} routes extracted", routes.len());
 
     let actual = ActualJson {
@@ -168,16 +209,12 @@ fn diff() -> Result<()> {
         return Ok(());
     }
 
-    // Load old routes
     let old_content = fs::read_to_string(&old_path)?;
     let old_actual: ActualJson = serde_json::from_str(&old_content)?;
     let old_routes = old_actual.exposed;
 
-    // Simulate new scan (after code changes)
-    let new_ldjson = mock_modified_output();
-    let new_routes = parse_routes(&new_ldjson)?;
+    let new_routes = run_adapter()?;
 
-    // Build maps by key (method + path)
     let old_map: HashMap<String, RouteEntry> = old_routes
         .into_iter()
         .map(|r| (r.key(), r))
@@ -189,7 +226,6 @@ fn diff() -> Result<()> {
 
     let mut has_changes = false;
 
-    // Find removed (in old but not in new)
     for key in old_map.keys() {
         if !new_map.contains_key(key) {
             if !has_changes {
@@ -200,7 +236,6 @@ fn diff() -> Result<()> {
         }
     }
 
-    // Find added (in new but not in old)
     for key in new_map.keys() {
         if !old_map.contains_key(key) {
             if !has_changes {
@@ -211,7 +246,6 @@ fn diff() -> Result<()> {
         }
     }
 
-    // Find modified (same key, different segments)
     for key in old_map.keys() {
         if let (Some(old), Some(new)) = (old_map.get(key), new_map.get(key)) {
             if old.segments != new.segments {
@@ -235,11 +269,9 @@ fn diff() -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-
     match cli.command {
         Commands::Scan => scan()?,
         Commands::Diff => diff()?,
     }
-
     Ok(())
 }
