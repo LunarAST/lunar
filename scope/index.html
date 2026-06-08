@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>LunarScope - Ecosystem Topology</title>
+<script src="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js"></script>
+<style>
+  body { margin:0; font-family: system-ui, sans-serif; }
+  #mynetwork { width:100vw; height:100vh; border:none; }
+  .info-panel { position:fixed; top:10px; right:10px; background:white; border:1px solid #ccc; padding:12px; border-radius:6px; max-width:300px; display:none; z-index:100; box-shadow:0 2px 8px rgba(0,0,0,0.15); }
+</style>
+</head>
+<body>
+<div id="mynetwork"></div>
+<div class="info-panel" id="info"></div>
+<script>
+async function loadMap() {
+  const resp = await fetch('lunar-map.json');
+  return resp.json();
+}
+
+function render(map) {
+  const nodes = [];
+  const edges = [];
+  const statusColors = {
+    "Aligned": "#4caf50",
+    "ParamNameMismatch": "#ff9800",
+    "Orphaned": "#f44336",
+    "MethodMismatch": "#f44336",
+    "Unverified": "#9e9e9e"
+  };
+  const projectSet = new Set();
+  for (const p of map.projects) {
+    projectSet.add(p.name);
+  }
+  // Project nodes
+  for (const name of projectSet) {
+    nodes.push({ id: name, label: name, shape: 'box', color: { background: '#e3f2fd', border: '#1976d2' } });
+  }
+  // Alignment edges
+  for (const a of map.alignments) {
+    const id = `${a.clientProject}->${a.serverProject}:${a.method} ${a.path}`;
+    edges.push({
+      from: a.clientProject,
+      to: a.serverProject,
+      label: `${a.method} ${a.path}`,
+      title: `Status: ${a.status}${a.warning ? '\nWarning: ' + a.warning : ''}`,
+      color: { color: statusColors[a.status] || '#888', highlight: '#000' },
+      arrows: 'to',
+      dashes: a.status === 'Orphaned' || a.status === 'Unverified',
+      width: 2,
+      alignment: a
+    });
+  }
+
+  const container = document.getElementById('mynetwork');
+  const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+  const options = {
+    physics: { solver: 'forceAtlas2Based', stabilization: { iterations: 100 } },
+    interaction: { hover: true, tooltipDelay: 200 },
+    edges: { smooth: { type: 'continuous' } }
+  };
+  const network = new vis.Network(container, data, options);
+
+  network.on('click', function(params) {
+    if (params.edges.length > 0) {
+      const edgeId = params.edges[0];
+      const edge = edges.find(e => e.id === edgeId);
+      if (edge && edge.alignment) {
+        const info = document.getElementById('info');
+        info.style.display = 'block';
+        info.innerHTML = `
+          <b>${edge.from} → ${edge.to}</b><br>
+          Method: ${edge.alignment.method}<br>
+          Path: ${edge.alignment.path}<br>
+          Status: ${edge.alignment.status}<br>
+          ${edge.alignment.warning ? 'Warning: ' + edge.alignment.warning : ''}
+        `;
+      }
+    } else {
+      document.getElementById('info').style.display = 'none';
+    }
+  });
+}
+
+loadMap().then(render).catch(err => alert('Failed to load lunar-map.json: ' + err));
+</script>
+</body>
+</html>

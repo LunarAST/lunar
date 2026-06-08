@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use lunar::{ActualJson, InterfacesYml, InterfaceItem, RouteEntry, LunarMapConfig, generate_lunar_map, compare_routes, build_structural_index, run_adapter, DiffResult};
+use lunar::{ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig, generate_lunar_map, compare_routes, build_structural_index, run_adapter, DiffResult};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -29,6 +29,9 @@ enum Commands {
         /// Path to lunar-map-config.json
         #[arg(default_value = "lunar-map-config.json")]
         config: String,
+        /// Output file path (if not specified, prints to stdout)
+        #[arg(short = 'o', long)]
+        output: Option<String>,
     },
 }
 
@@ -148,7 +151,7 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-fn map(config_path: &str) -> Result<()> {
+fn map(config_path: &str, output: Option<&str>) -> Result<()> {
     let config_content = fs::read_to_string(config_path)?;
     let config: LunarMapConfig = serde_json::from_str(&config_content)?;
 
@@ -160,8 +163,13 @@ fn map(config_path: &str) -> Result<()> {
     }
 
     let lunar_map = generate_lunar_map(&project_actuals);
-    let output = serde_json::to_string_pretty(&lunar_map)?;
-    println!("{}", output);
+    let output_json = serde_json::to_string_pretty(&lunar_map)?;
+    if let Some(out_path) = output {
+        fs::write(out_path, output_json)?;
+        println!("✓ lunar-map.json written to {}", out_path);
+    } else {
+        println!("{}", output_json);
+    }
     Ok(())
 }
 
@@ -171,6 +179,6 @@ fn main() -> Result<()> {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
-        Commands::Map { config } => map(&config),
+        Commands::Map { config, output } => map(&config, output.as_deref()),
     }
 }

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::fs;
 
 #[test]
-fn test_generate_lunar_map() {
+fn test_generate_lunar_map_basic() {
     let auth_actual: ActualJson = serde_json::from_str(
         &fs::read_to_string("tests/fixtures/map/auth_actual.json").unwrap()
     ).unwrap();
@@ -17,19 +17,25 @@ fn test_generate_lunar_map() {
 
     let lunar_map = generate_lunar_map(&map);
 
+    // Check projects
     assert_eq!(lunar_map.projects.len(), 2);
 
-    // Check alignments: we expect 2 alignments (cross-matched)
+    // Check alignments
     assert_eq!(lunar_map.alignments.len(), 2);
-    // auth-service consumed POST /users -> user-service exposed POST /users -> Aligned
     let auth_alignment = lunar_map.alignments.iter()
         .find(|a| a.client_project == "auth-service")
         .unwrap();
     assert_eq!(auth_alignment.status, "Aligned");
 
-    // user-service consumed GET /auth/verify -> auth-service exposed GET /auth/verify -> Aligned
-    let user_alignment = lunar_map.alignments.iter()
-        .find(|a| a.client_project == "user-service")
+    // Check aggregated edges
+    assert_eq!(lunar_map.aggregated_edges.len(), 2);
+    let edge = lunar_map.aggregated_edges.iter()
+        .find(|e| e.client_project == "auth-service")
         .unwrap();
-    assert_eq!(user_alignment.status, "Aligned");
+    assert_eq!(edge.call_count, 1);
+    assert_eq!(edge.status, "Aligned");
+
+    // Check anomalies
+    assert_eq!(lunar_map.anomalies.unused_endpoints.len(), 0);
+    assert_eq!(lunar_map.anomalies.orphaned_consumers.len(), 0);
 }

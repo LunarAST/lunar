@@ -194,20 +194,50 @@ pub struct AlignmentEntry {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct AggregatedEdge {
+    #[serde(rename = "clientProject")]
+    pub client_project: String,
+    #[serde(rename = "serverProject")]
+    pub server_project: String,
+    #[serde(rename = "callCount")]
+    pub call_count: usize,
+    pub status: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Anomalies {
+    #[serde(rename = "unusedEndpoints")]
+    pub unused_endpoints: Vec<AnomalyEndpoint>,
+    #[serde(rename = "orphanedConsumers")]
+    pub orphaned_consumers: Vec<AnomalyEndpoint>,
+    #[serde(rename = "crossLayerViolations")]
+    pub cross_layer_violations: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AnomalyEndpoint {
+    pub project: String,
+    pub path: String,
+    pub method: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LunarMap {
     pub version: String,
     pub projects: Vec<ProjectInfo>,
     pub alignments: Vec<AlignmentEntry>,
+    #[serde(rename = "aggregatedEdges")]
+    pub aggregated_edges: Vec<AggregatedEdge>,
+    pub anomalies: Anomalies,
 }
 
 /// Align one consumer route against the exposed routes of all other projects.
-/// Returns (status, server_project, warning)
 fn align_consumed_route(
     consumed: &RouteEntry,
     client_name: &str,
     project_map: &HashMap<String, &ActualJson>,
 ) -> Option<AlignmentEntry> {
-    // If consumed has explicit target_project, filter possible servers
     let target = consumed.target_project.as_deref().unwrap_or("");
 
     for (server_name, server_actual) in project_map {
@@ -218,7 +248,6 @@ fn align_consumed_route(
             continue;
         }
 
-        // Try to find a structural match in server's exposed
         if let Some(server_route) = server_actual
             .exposed
             .iter()
@@ -246,7 +275,6 @@ fn align_consumed_route(
         }
     }
 
-    // No structural match found -> Orphaned (if target specified) or not reportable
     if !target.is_empty() {
         Some(AlignmentEntry {
             client_project: client_name.to_string(),
@@ -259,6 +287,50 @@ fn align_consumed_route(
     } else {
         None
     }
+}
+
+/// Compute the most severe status from a list of status strings.
+fn aggregate_status(statuses: &[String]) -> String {
+    let priority = |s: &str| -> usize {
+        match s {
+            "MethodMismatch" => 0,
+            "Orphaned" => 1,
+            "ParamNameMismatch" => 2,
+            "Aligned" => 3,
+            _ => 4,
+        }
+    };
+    statuses
+        .iter()
+        .min_by_key(|s| priority(s))
+        .cloned()
+        .unwrap_or_else(|| "Aligned".to_string())
+}
+
+/// Detect unused endpoints: exposed routes of a project that no other project consumes.
+fn detect_unused_endpoints(
+    project_actuals: &HashMap<String, ActualJson>,
+    alignments: &[AlignmentEntry],
+) -> Vec<AnomalyEndpoint> {
+    let mut unused = Vec::new();
+    for (name, actual) in project_actuals {
+        for exposed in &actual.exposed {
+            let consumed_by_any = alignments.iter().any(|a| {
+                a.server_project == *name
+                    && a.path == exposed.to_path()
+                    && a.method == exposed.method
+                    && a.status != "Orphaned"
+            });
+            if !consumed_by_any {
+                unused.push(AnomalyEndpoint {
+                    project: name.clone(),
+                    path: exposed.to_path(),
+                    method: exposed.method.clone(),
+                });
+            }
+        }
+    }
+    unused
 }
 
 pub fn generate_lunar_map(
@@ -307,10 +379,51 @@ pub fn generate_lunar_map(
         }
     }
 
+    // Build aggregated edges
+    let mut edge_groups: HashMap<(String, String), Vec<&AlignmentEntry>> = HashMap::new();
+    for entry in &alignments {
+        let key = (entry.client_project.clone(), entry.server_project.clone());
+        edge_groups.entry(key).or_default().push(entry);
+    }
+    let aggregated_edges: Vec<AggregatedEdge> = edge_groups
+        .into_iter()
+        .map(|((client, server), entries)| {
+            let statuses: Vec<String> = entries.iter().map(|e| e.status.clone()).collect();
+            let paths: Vec<String> = entries.iter().map(|e| format!("{} {}", e.method, e.path)).collect();
+            AggregatedEdge {
+                client_project: client,
+                server_project: server,
+                call_count: entries.len(),
+                status: aggregate_status(&statuses),
+                paths,
+            }
+        })
+        .collect();
+
+    // Detect anomalies
+    let unused_endpoints = detect_unused_endpoints(project_actuals, &alignments);
+    let orphaned_consumers: Vec<AnomalyEndpoint> = alignments
+        .iter()
+        .filter(|a| a.status == "Orphaned")
+        .map(|a| AnomalyEndpoint {
+            project: a.client_project.clone(),
+            path: a.path.clone(),
+            method: a.method.clone(),
+        })
+        .collect();
+
+    let anomalies = Anomalies {
+        unused_endpoints,
+        orphaned_consumers,
+        cross_layer_violations: vec![],
+    };
+
     LunarMap {
         version: "0.5.0".to_string(),
         projects,
         alignments,
+        aggregated_edges,
+        anomalies,
     }
 }
 

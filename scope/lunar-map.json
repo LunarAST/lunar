@@ -1,0 +1,88 @@
+{
+  "version": "0.5.0",
+  "projects": [
+    {
+      "name": "auth-service",
+      "type": "mixed",
+      "sha": "unknown",
+      "scanStatus": "success",
+      "interfaces": {
+        "consumed": [
+          {
+            "method": "POST",
+            "path": "/users",
+            "targetProject": "unknown"
+          }
+        ],
+        "exposed": [
+          {
+            "method": "GET",
+            "path": "/auth/verify"
+          }
+        ]
+      }
+    },
+    {
+      "name": "user-service",
+      "type": "mixed",
+      "sha": "unknown",
+      "scanStatus": "success",
+      "interfaces": {
+        "consumed": [
+          {
+            "method": "GET",
+            "path": "/auth/verify",
+            "targetProject": "unknown"
+          }
+        ],
+        "exposed": [
+          {
+            "method": "POST",
+            "path": "/users"
+          }
+        ]
+      }
+    }
+  ],
+  "alignments": [
+    {
+      "clientProject": "auth-service",
+      "serverProject": "user-service",
+      "path": "/users",
+      "method": "POST",
+      "status": "Aligned"
+    },
+    {
+      "clientProject": "user-service",
+      "serverProject": "auth-service",
+      "path": "/auth/verify",
+      "method": "GET",
+      "status": "Aligned"
+    }
+  ],
+  "aggregatedEdges": [
+    {
+      "clientProject": "auth-service",
+      "serverProject": "user-service",
+      "callCount": 1,
+      "status": "Aligned",
+      "paths": [
+        "POST /users"
+      ]
+    },
+    {
+      "clientProject": "user-service",
+      "serverProject": "auth-service",
+      "callCount": 1,
+      "status": "Aligned",
+      "paths": [
+        "GET /auth/verify"
+      ]
+    }
+  ],
+  "anomalies": {
+    "unusedEndpoints": [],
+    "orphanedConsumers": [],
+    "crossLayerViolations": []
+  }
+}
