@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "auth-service": "tests/fixtures/map/auth_actual.json",
+    "user-service": "tests/fixtures/map/user_actual.json"
+  }
+}

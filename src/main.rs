@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use lunar::{ActualJson, InterfacesYml, InterfaceItem, RouteEntry, compare_routes, build_structural_index, run_adapter, DiffResult};
+use lunar::{ActualJson, InterfacesYml, InterfaceItem, RouteEntry, LunarMapConfig, generate_lunar_map, compare_routes, build_structural_index, run_adapter, DiffResult};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -23,6 +23,12 @@ enum Commands {
         apply: bool,
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Generate a global topology map from multiple project actual.json files
+    Map {
+        /// Path to lunar-map-config.json
+        #[arg(default_value = "lunar-map-config.json")]
+        config: String,
     },
 }
 
@@ -142,11 +148,29 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+fn map(config_path: &str) -> Result<()> {
+    let config_content = fs::read_to_string(config_path)?;
+    let config: LunarMapConfig = serde_json::from_str(&config_content)?;
+
+    let mut project_actuals = HashMap::new();
+    for (name, path_str) in &config.projects {
+        let actual_content = fs::read_to_string(path_str)?;
+        let actual: ActualJson = serde_json::from_str(&actual_content)?;
+        project_actuals.insert(name.clone(), actual);
+    }
+
+    let lunar_map = generate_lunar_map(&project_actuals);
+    let output = serde_json::to_string_pretty(&lunar_map)?;
+    println!("{}", output);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
+        Commands::Map { config } => map(&config),
     }
 }

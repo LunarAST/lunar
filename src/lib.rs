@@ -24,6 +24,8 @@ pub struct RouteEntry {
     pub source_file: String,
     pub line_number: u32,
     pub extraction_method: String,
+    #[serde(default)]
+    pub target_project: Option<String>,
 }
 
 impl RouteEntry {
@@ -134,7 +136,6 @@ pub enum DiffResult {
     Unchanged,
 }
 
-/// Compare two routes at the same structural position.
 pub fn compare_routes(old: &RouteEntry, new: &RouteEntry) -> DiffResult {
     if old.method != new.method {
         return DiffResult::MethodChanged {
@@ -153,13 +154,164 @@ pub fn compare_routes(old: &RouteEntry, new: &RouteEntry) -> DiffResult {
     DiffResult::Unchanged
 }
 
-/// Build a structural index from routes.
 pub fn build_structural_index(routes: &[RouteEntry]) -> HashMap<String, Vec<RouteEntry>> {
     let mut index: HashMap<String, Vec<RouteEntry>> = HashMap::new();
     for r in routes {
         index.entry(r.structural_id()).or_default().push(r.clone());
     }
     index
+}
+
+// ---------- Lunar Map Generation ----------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LunarMapConfig {
+    pub projects: HashMap<String, String>, // project_name -> path to actual.json
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProjectInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub project_type: String,
+    pub sha: String,
+    #[serde(rename = "scanStatus")]
+    pub scan_status: String,
+    pub interfaces: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AlignmentEntry {
+    #[serde(rename = "clientProject")]
+    pub client_project: String,
+    #[serde(rename = "serverProject")]
+    pub server_project: String,
+    pub path: String,
+    pub method: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LunarMap {
+    pub version: String,
+    pub projects: Vec<ProjectInfo>,
+    pub alignments: Vec<AlignmentEntry>,
+}
+
+/// Align one consumer route against the exposed routes of all other projects.
+/// Returns (status, server_project, warning)
+fn align_consumed_route(
+    consumed: &RouteEntry,
+    client_name: &str,
+    project_map: &HashMap<String, &ActualJson>,
+) -> Option<AlignmentEntry> {
+    // If consumed has explicit target_project, filter possible servers
+    let target = consumed.target_project.as_deref().unwrap_or("");
+
+    for (server_name, server_actual) in project_map {
+        if server_name == client_name {
+            continue;
+        }
+        if !target.is_empty() && target != *server_name {
+            continue;
+        }
+
+        // Try to find a structural match in server's exposed
+        if let Some(server_route) = server_actual
+            .exposed
+            .iter()
+            .find(|r| r.structural_id() == consumed.structural_id())
+        {
+            let result = compare_routes(consumed, server_route);
+            let (status, warning) = match result {
+                DiffResult::Unchanged => ("Aligned".to_string(), None),
+                DiffResult::ParamNamesChanged { .. } => {
+                    ("ParamNameMismatch".to_string(), None)
+                }
+                DiffResult::MethodChanged { .. } => {
+                    ("MethodMismatch".to_string(), None)
+                }
+                _ => unreachable!(),
+            };
+            return Some(AlignmentEntry {
+                client_project: client_name.to_string(),
+                server_project: server_name.clone(),
+                path: consumed.to_path(),
+                method: consumed.method.clone(),
+                status,
+                warning,
+            });
+        }
+    }
+
+    // No structural match found -> Orphaned (if target specified) or not reportable
+    if !target.is_empty() {
+        Some(AlignmentEntry {
+            client_project: client_name.to_string(),
+            server_project: target.to_string(),
+            path: consumed.to_path(),
+            method: consumed.method.clone(),
+            status: "Orphaned".to_string(),
+            warning: None,
+        })
+    } else {
+        None
+    }
+}
+
+pub fn generate_lunar_map(
+    project_actuals: &HashMap<String, ActualJson>,
+) -> LunarMap {
+    let mut projects = Vec::new();
+    let mut alignments = Vec::new();
+
+    // Build project infos
+    for (name, actual) in project_actuals {
+        let interfaces = serde_json::json!({
+            "exposed": actual.exposed.iter().map(|r| {
+                serde_json::json!({
+                    "path": r.to_path(),
+                    "method": r.method
+                })
+            }).collect::<Vec<_>>(),
+            "consumed": actual.consumed.iter().map(|r| {
+                serde_json::json!({
+                    "path": r.to_path(),
+                    "method": r.method,
+                    "targetProject": r.target_project.as_deref().unwrap_or("unknown")
+                })
+            }).collect::<Vec<_>>(),
+        });
+        projects.push(ProjectInfo {
+            name: name.clone(),
+            project_type: "mixed".to_string(),
+            sha: "unknown".to_string(),
+            scan_status: "success".to_string(),
+            interfaces,
+        });
+    }
+
+    // Build alignments
+    let project_map: HashMap<String, &ActualJson> = project_actuals
+        .iter()
+        .map(|(k, v)| (k.clone(), v))
+        .collect();
+
+    for (client_name, actual) in project_actuals {
+        for consumed in &actual.consumed {
+            if let Some(entry) = align_consumed_route(consumed, client_name, &project_map) {
+                alignments.push(entry);
+            }
+        }
+    }
+
+    LunarMap {
+        version: "0.5.0".to_string(),
+        projects,
+        alignments,
+    }
 }
 
 // ---------- Adapter ----------

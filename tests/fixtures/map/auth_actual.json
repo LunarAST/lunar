@@ -1,0 +1,8 @@
+{
+  "exposed": [
+    {"method":"GET","segments":[{"type":"literal","value":"auth"},{"type":"literal","value":"verify"}],"source_file":"auth.rs","line_number":5,"extraction_method":"ast"}
+  ],
+  "consumed": [
+    {"method":"POST","segments":[{"type":"literal","value":"users"}],"source_file":"auth.rs","line_number":10,"extraction_method":"ast","targetProject":"user-service"}
+  ]
+}
