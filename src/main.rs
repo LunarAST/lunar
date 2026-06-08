@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,6 +22,15 @@ enum Commands {
     Scan,
     /// Compare current project routes with last saved actual.json
     Diff,
+    /// Sync changes from scan into the intent overlay (with backup)
+    Sync {
+        /// Actually apply changes (writes to interfaces.yml)
+        #[arg(long)]
+        apply: bool,
+        /// Preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 // ---------- Data structures ----------
@@ -80,11 +90,35 @@ struct ActualJson {
     consumed: Vec<RouteEntry>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default)]
+struct InterfacesYml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project: Option<String>,
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exposed: Option<Vec<InterfaceItem>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    consumed: Option<Vec<InterfaceItem>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct InterfaceItem {
+    path: String,
+    method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "targetProject")]
+    target_project: Option<String>,
+}
+
 // ---------- Adapter process management ----------
 
-/// Find an adapter binary by name in PATH.
 fn find_adapter(name: &str) -> Option<String> {
-    // First, check next to the current executable (development convenience)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let local_path = exe_dir.join(name);
@@ -93,7 +127,6 @@ fn find_adapter(name: &str) -> Option<String> {
             }
         }
     }
-    // Then, check PATH
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in path_var.split(':') {
             let candidate = Path::new(dir).join(name);
@@ -105,14 +138,10 @@ fn find_adapter(name: &str) -> Option<String> {
     None
 }
 
-/// Run the adapter for the current project and return the parsed routes.
 fn run_adapter() -> Result<Vec<RouteEntry>> {
     let project_dir = std::env::current_dir()?;
     let project_dir_str = project_dir.to_string_lossy().to_string();
 
-    // Detect project language and find appropriate adapter.
-    // For now, we check for Cargo.toml to detect Rust projects.
-    // Future: support other languages via config or auto-detection.
     let adapter_name = if project_dir.join("Cargo.toml").exists() {
         "lunar-extract-rust"
     } else {
@@ -130,7 +159,6 @@ fn run_adapter() -> Result<Vec<RouteEntry>> {
         )
     })?;
 
-    // Spawn adapter subprocess
     let output = Command::new(&adapter_path)
         .arg(&project_dir_str)
         .output()?;
@@ -246,22 +274,105 @@ fn diff() -> Result<()> {
         }
     }
 
-    for key in old_map.keys() {
-        if let (Some(old), Some(new)) = (old_map.get(key), new_map.get(key)) {
-            if old.segments != new.segments {
-                if !has_changes {
-                    println!("Changes detected:");
-                    has_changes = true;
-                }
-                println!("  ~ {}  (modified segments)", key);
-            }
-        }
-    }
-
     if !has_changes {
         println!("No changes detected.");
     }
 
+    Ok(())
+}
+
+// ---------- Sync command ----------
+
+fn sync(apply: bool, dry_run: bool) -> Result<()> {
+    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
+    let backup_dir = Path::new(".lunar").join(".backup");
+    let actual_path = Path::new(".lunar").join("route-ast-actual.json");
+
+    if !actual_path.exists() {
+        println!("No scan data found. Run 'lunar scan' first.");
+        return Ok(());
+    }
+
+    // Load current scan data
+    let actual_content = fs::read_to_string(&actual_path)?;
+    let actual: ActualJson = serde_json::from_str(&actual_content)?;
+    let scanned_routes = actual.exposed;
+
+    // Load or create interfaces.yml
+    let mut interfaces: InterfacesYml = if interfaces_path.exists() {
+        let yaml_content = fs::read_to_string(&interfaces_path)?;
+        serde_yaml::from_str(&yaml_content)?
+    } else {
+        InterfacesYml {
+            project: None,
+            project_type: None,
+            environment: None,
+            exposed: Some(Vec::new()),
+            consumed: None,
+        }
+    };
+
+    // Merge scanned routes into exposed list
+    let new_exposed: Vec<InterfaceItem> = scanned_routes
+        .iter()
+        .map(|r| InterfaceItem {
+            path: r.to_path(),
+            method: r.method.clone(),
+            reason: None,
+            target_project: None,
+        })
+        .collect();
+
+    if dry_run {
+        println!("--- Dry run preview ---");
+        if let Some(ref existing) = interfaces.exposed {
+            let old_map: HashMap<String, &InterfaceItem> = existing
+                .iter()
+                .map(|i| (format!("{} {}", i.method, i.path), i))
+                .collect();
+            let new_map: HashMap<String, &InterfaceItem> = new_exposed
+                .iter()
+                .map(|i| (format!("{} {}", i.method, i.path), i))
+                .collect();
+
+            for key in old_map.keys() {
+                if !new_map.contains_key(key) {
+                    println!("  - {} (would be removed from interfaces.yml)", key);
+                }
+            }
+            for key in new_map.keys() {
+                if !old_map.contains_key(key) {
+                    println!("  + {} (would be added to interfaces.yml)", key);
+                }
+            }
+        } else {
+            println!("  All {} routes would be added to interfaces.yml", new_exposed.len());
+        }
+        println!("--- End of preview ---");
+        return Ok(());
+    }
+
+    if !apply {
+        println!("No action taken. Use --apply to write changes, or --dry-run to preview.");
+        return Ok(());
+    }
+
+    // Backup old interfaces.yml if it exists
+    if interfaces_path.exists() {
+        fs::create_dir_all(&backup_dir)?;
+        let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let backup_path = backup_dir.join(format!("interfaces.yml.bak.{}", timestamp));
+        fs::copy(&interfaces_path, &backup_path)?;
+        println!("✓ Backup saved to {}", backup_path.display());
+    }
+
+    // Apply changes
+    interfaces.exposed = Some(new_exposed);
+
+    let new_yaml = serde_yaml::to_string(&interfaces)?;
+    fs::write(&interfaces_path, new_yaml)?;
+
+    println!("✓ interfaces.yml updated with {} exposed routes", scanned_routes.len());
     Ok(())
 }
 
@@ -272,6 +383,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Scan => scan()?,
         Commands::Diff => diff()?,
+        Commands::Sync { apply, dry_run } => sync(apply, dry_run)?,
     }
     Ok(())
 }
