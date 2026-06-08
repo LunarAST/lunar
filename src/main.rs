@@ -82,6 +82,30 @@ impl RouteEntry {
     fn key(&self) -> String {
         format!("{} {}", self.method, self.to_path())
     }
+
+    /// Key based only on path (method-independent) for method mismatch detection
+    fn path_key(&self) -> String {
+        self.to_path()
+    }
+
+    /// Returns parameter names in order
+    fn parameter_names(&self) -> Vec<String> {
+        self.segments
+            .iter()
+            .filter(|s| s.segment_type == "parameter")
+            .map(|s| s.name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    /// Aligned parameter names: only positions where both routes have a parameter
+    fn get_aligned_parameter_names(&self, other: &RouteEntry) -> Vec<String> {
+        self.segments
+            .iter()
+            .zip(other.segments.iter())
+            .filter(|(a, b)| a.segment_type == "parameter" && b.segment_type == "parameter")
+            .map(|(a, _)| a.name.clone().unwrap_or_default())
+            .collect()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -114,6 +138,17 @@ struct InterfaceItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "targetProject")]
     target_project: Option<String>,
+}
+
+// ---------- Alignment statuses (RouteAST Sub-Protocol §5.3) ----------
+
+#[derive(Debug, PartialEq)]
+enum AlignmentStatus {
+    Unverified,
+    MethodMismatch { client_method: String, server_method: String },
+    Orphaned,
+    ParamNameMismatch { client_names: Vec<String>, server_names: Vec<String> },
+    Aligned,
 }
 
 // ---------- Adapter process management ----------
@@ -172,8 +207,6 @@ fn run_adapter() -> Result<Vec<RouteEntry>> {
     parse_routes(&stdout)
 }
 
-// ---------- Core: parse LDJSON output into routes ----------
-
 fn parse_routes(ldjson: &str) -> Result<Vec<RouteEntry>> {
     let mut routes: Vec<RouteEntry> = Vec::new();
     let mut count_from_marker: Option<usize> = None;
@@ -228,7 +261,29 @@ fn scan() -> Result<()> {
     Ok(())
 }
 
-// ---------- Diff command ----------
+// ---------- Diff command (full alignment) ----------
+
+fn evaluate_alignment(client: &RouteEntry, server: &RouteEntry) -> AlignmentStatus {
+    // 1. Method mismatch
+    if client.method != server.method {
+        return AlignmentStatus::MethodMismatch {
+            client_method: client.method.clone(),
+            server_method: server.method.clone(),
+        };
+    }
+
+    // 2. Check parameter names (only positions where both are parameters)
+    let client_params = client.get_aligned_parameter_names(server);
+    let server_params = server.get_aligned_parameter_names(client);
+    if client_params != server_params {
+        return AlignmentStatus::ParamNameMismatch {
+            client_names: client_params,
+            server_names: server_params,
+        };
+    }
+
+    AlignmentStatus::Aligned
+}
 
 fn diff() -> Result<()> {
     let old_path = Path::new(".lunar").join("route-ast-actual.json");
@@ -243,39 +298,80 @@ fn diff() -> Result<()> {
 
     let new_routes = run_adapter()?;
 
-    let old_map: HashMap<String, RouteEntry> = old_routes
-        .into_iter()
-        .map(|r| (r.key(), r))
-        .collect();
-    let new_map: HashMap<String, RouteEntry> = new_routes
-        .into_iter()
-        .map(|r| (r.key(), r))
-        .collect();
+    // Build maps by path (method-agnostic) to detect method mismatches
+    let mut old_by_path: HashMap<String, Vec<RouteEntry>> = HashMap::new();
+    let mut new_by_path: HashMap<String, Vec<RouteEntry>> = HashMap::new();
 
-    let mut has_changes = false;
+    for r in &old_routes {
+        old_by_path.entry(r.path_key()).or_default().push(r.clone());
+    }
+    for r in &new_routes {
+        new_by_path.entry(r.path_key()).or_default().push(r.clone());
+    }
 
-    for key in old_map.keys() {
-        if !new_map.contains_key(key) {
-            if !has_changes {
-                println!("Changes detected:");
-                has_changes = true;
+    let mut changes = Vec::new();
+
+    // Check each path
+    let all_paths: Vec<String> = {
+        let mut keys: Vec<String> = old_by_path.keys().cloned().collect();
+        for k in new_by_path.keys() {
+            if !keys.contains(k) {
+                keys.push(k.clone());
             }
-            println!("  - {}  (removed)", key);
+        }
+        keys
+    };
+
+    for path in &all_paths {
+        let old_list = old_by_path.get(path).map(|v| v.clone()).unwrap_or_default();
+        let new_list = new_by_path.get(path).map(|v| v.clone()).unwrap_or_default();
+
+        if old_list.is_empty() {
+            for r in &new_list {
+                changes.push(format!("  + {} {} (added)", r.method, path));
+            }
+            continue;
+        }
+        if new_list.is_empty() {
+            for r in &old_list {
+                changes.push(format!("  - {} {} (removed)", r.method, path));
+            }
+            continue;
+        }
+
+        // Pairwise comparison for same path
+        for old_route in &old_list {
+            if let Some(new_route) = new_list.iter().find(|r| r.method == old_route.method) {
+                let status = evaluate_alignment(old_route, new_route);
+                match status {
+                    AlignmentStatus::Aligned => {},
+                    AlignmentStatus::ParamNameMismatch { client_names, server_names } => {
+                        changes.push(format!(
+                            "  ~ {} {} (param names: {:?} → {:?})",
+                            old_route.method, path, client_names, server_names
+                        ));
+                    },
+                    _ => {}
+                }
+            } else {
+                // Old method not found in new list: method mismatch
+                for new_route in &new_list {
+                    changes.push(format!(
+                        "  ~ {} {} → {} {} (method changed)",
+                        old_route.method, path, new_route.method, path
+                    ));
+                }
+            }
         }
     }
 
-    for key in new_map.keys() {
-        if !old_map.contains_key(key) {
-            if !has_changes {
-                println!("Changes detected:");
-                has_changes = true;
-            }
-            println!("  + {}  (added)", key);
-        }
-    }
-
-    if !has_changes {
+    if changes.is_empty() {
         println!("No changes detected.");
+    } else {
+        println!("Changes detected:");
+        for line in &changes {
+            println!("{}", line);
+        }
     }
 
     Ok(())
@@ -293,12 +389,10 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Load current scan data
     let actual_content = fs::read_to_string(&actual_path)?;
     let actual: ActualJson = serde_json::from_str(&actual_content)?;
     let scanned_routes = actual.exposed;
 
-    // Load or create interfaces.yml
     let mut interfaces: InterfacesYml = if interfaces_path.exists() {
         let yaml_content = fs::read_to_string(&interfaces_path)?;
         serde_yaml::from_str(&yaml_content)?
@@ -312,7 +406,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
         }
     };
 
-    // Merge scanned routes into exposed list
     let new_exposed: Vec<InterfaceItem> = scanned_routes
         .iter()
         .map(|r| InterfaceItem {
@@ -357,7 +450,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Backup old interfaces.yml if it exists
     if interfaces_path.exists() {
         fs::create_dir_all(&backup_dir)?;
         let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
@@ -366,7 +458,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
         println!("✓ Backup saved to {}", backup_path.display());
     }
 
-    // Apply changes
     interfaces.exposed = Some(new_exposed);
 
     let new_yaml = serde_yaml::to_string(&interfaces)?;
