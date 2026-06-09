@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 // ---------- Data structures ----------
 
@@ -225,18 +228,14 @@ fn align_consumed_route(
     scan_status_map: &HashMap<String, String>,
 ) -> (String, Option<String>) {
     let target = consumed.target_project.as_deref().unwrap_or("");
-
     let target_scan_failed = !target.is_empty()
         && scan_status_map.get(target).map_or(false, |s| s == "failed" || s == "stale");
-
     if target_scan_failed {
         return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string()));
     }
-
     for (server_name, server_actual) in project_map {
         if server_name == client_name { continue; }
         if !target.is_empty() && target != *server_name { continue; }
-
         if let Some(server_route) = server_actual.exposed.iter().find(|r| r.structural_id() == consumed.structural_id()) {
             let result = compare_routes(consumed, server_route);
             let (status, warning) = match result {
@@ -245,20 +244,14 @@ fn align_consumed_route(
                 DiffResult::MethodChanged { .. } => ("MethodMismatch".to_string(), None),
                 _ => unreachable!(),
             };
-
             if scan_status_map.get(server_name).map_or(false, |s| s == "failed" || s == "stale") {
                 return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string()));
             }
-
             return (status, warning);
         }
     }
-
-    if target.is_empty() {
-        (String::new(), None)
-    } else {
-        ("Orphaned".to_string(), None)
-    }
+    if target.is_empty() { (String::new(), None) }
+    else { ("Orphaned".to_string(), None) }
 }
 
 fn aggregate_status(statuses: &[String]) -> String {
@@ -289,78 +282,41 @@ pub fn generate_lunar_map(
 ) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();
-
     for (name, actual) in project_actuals {
         let scan_status = scan_statuses.get(name).cloned().unwrap_or_else(|| "success".to_string());
         let interfaces = serde_json::json!({
-            "exposed": actual.exposed.iter().map(|r| {
-                serde_json::json!({"path": r.to_path(), "method": r.method})
-            }).collect::<Vec<_>>(),
-            "consumed": actual.consumed.iter().map(|r| {
-                serde_json::json!({"path": r.to_path(), "method": r.method, "targetProject": r.target_project.as_deref().unwrap_or("unknown")})
-            }).collect::<Vec<_>>(),
+            "exposed": actual.exposed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method})).collect::<Vec<_>>(),
+            "consumed": actual.consumed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method, "targetProject": r.target_project.as_deref().unwrap_or("unknown")})).collect::<Vec<_>>(),
         });
-        projects.push(ProjectInfo {
-            name: name.clone(), project_type: "mixed".to_string(), sha: "unknown".to_string(),
-            scan_status, interfaces,
-        });
+        projects.push(ProjectInfo { name: name.clone(), project_type: "mixed".to_string(), sha: "unknown".to_string(), scan_status, interfaces });
     }
-
     let project_map: HashMap<String, &ActualJson> = project_actuals.iter().map(|(k, v)| (k.clone(), v)).collect();
-    let scan_status_map: HashMap<String, String> = scan_statuses.clone();
-
+    let scan_status_map = scan_statuses.clone();
     for (client_name, actual) in project_actuals {
         for consumed in &actual.consumed {
             let (status, warning) = align_consumed_route(consumed, client_name, &project_map, &scan_status_map);
             if status.is_empty() { continue; }
-            alignments.push(AlignmentEntry {
-                client_project: client_name.clone(),
-                server_project: consumed.target_project.as_deref().unwrap_or("unknown").to_string(),
-                path: consumed.to_path(),
-                method: consumed.method.clone(),
-                status,
-                warning,
-            });
+            alignments.push(AlignmentEntry { client_project: client_name.clone(), server_project: consumed.target_project.as_deref().unwrap_or("unknown").to_string(), path: consumed.to_path(), method: consumed.method.clone(), status, warning });
         }
     }
-
     let mut edge_groups: HashMap<(String, String), Vec<&AlignmentEntry>> = HashMap::new();
-    for entry in &alignments {
-        let key = (entry.client_project.clone(), entry.server_project.clone());
-        edge_groups.entry(key).or_default().push(entry);
-    }
-
+    for entry in &alignments { edge_groups.entry((entry.client_project.clone(), entry.server_project.clone())).or_default().push(entry); }
     let aggregated_edges: Vec<AggregatedEdge> = edge_groups.into_iter().map(|((client, server), entries)| {
         let statuses: Vec<String> = entries.iter().map(|e| e.status.clone()).collect();
         let paths: Vec<String> = entries.iter().map(|e| format!("{} {}", e.method, e.path)).collect();
         let mut ports = Vec::new();
-        if let (Some(client_actual), Some(server_actual)) = (project_actuals.get(&client), project_actuals.get(&server)) {
+        if let (Some(ca), Some(sa)) = (project_actuals.get(&client), project_actuals.get(&server)) {
             for entry in &entries {
-                let source_idx = client_actual.consumed.iter().position(|c| c.to_path() == entry.path && c.method == entry.method);
-                let target_idx = server_actual.exposed.iter().position(|e| e.to_path() == entry.path && e.method == entry.method);
-                if let (Some(si), Some(ti)) = (source_idx, target_idx) {
-                    ports.push(PortConnection {
-                        path: entry.path.clone(), method: entry.method.clone(), status: entry.status.clone(),
-                        source_port_index: si, target_port_index: ti,
-                    });
-                }
+                let si = ca.consumed.iter().position(|c| c.to_path() == entry.path && c.method == entry.method);
+                let ti = sa.exposed.iter().position(|e| e.to_path() == entry.path && e.method == entry.method);
+                if let (Some(s), Some(t)) = (si, ti) { ports.push(PortConnection { path: entry.path.clone(), method: entry.method.clone(), status: entry.status.clone(), source_port_index: s, target_port_index: t }); }
             }
         }
-        AggregatedEdge {
-            client_project: client, server_project: server,
-            call_count: entries.len(), status: aggregate_status(&statuses), paths, ports,
-        }
+        AggregatedEdge { client_project: client, server_project: server, call_count: entries.len(), status: aggregate_status(&statuses), paths, ports }
     }).collect();
-
     let unused_endpoints = detect_unused_endpoints(project_actuals, &alignments);
-    let orphaned_consumers: Vec<AnomalyEndpoint> = alignments.iter()
-        .filter(|a| a.status == "Orphaned")
-        .map(|a| AnomalyEndpoint { project: a.client_project.clone(), path: a.path.clone(), method: a.method.clone() })
-        .collect();
-
-    let anomalies = Anomalies { unused_endpoints, orphaned_consumers, cross_layer_violations: vec![] };
-
-    LunarMap { version: "0.5.0".to_string(), projects, alignments, aggregated_edges, anomalies }
+    let orphaned_consumers: Vec<AnomalyEndpoint> = alignments.iter().filter(|a| a.status == "Orphaned").map(|a| AnomalyEndpoint { project: a.client_project.clone(), path: a.path.clone(), method: a.method.clone() }).collect();
+    LunarMap { version: "0.5.0".to_string(), projects, alignments, aggregated_edges, anomalies: Anomalies { unused_endpoints, orphaned_consumers, cross_layer_violations: vec![] } }
 }
 
 // ---------- Adapter ----------
@@ -381,18 +337,41 @@ pub fn find_adapter(name: &str) -> Option<String> {
     None
 }
 
+/// Spawn adapter subprocess with timeout.
+/// Uses the `wait-timeout` crate to block until the child exits or timeout expires.
+/// No polling — the OS handles the wait.
 pub fn run_adapter() -> anyhow::Result<Vec<RouteEntry>> {
     let project_dir = std::env::current_dir()?;
     let project_dir_str = project_dir.to_string_lossy().to_string();
     let adapter_name = if project_dir.join("Cargo.toml").exists() { "lunar-extract-rust" }
     else { anyhow::bail!("Could not detect project language. Currently supported: Rust (Cargo.toml found)."); };
     let adapter_path = find_adapter(adapter_name).ok_or_else(|| anyhow::anyhow!("Adapter '{}' not found in PATH.", adapter_name))?;
-    let output = Command::new(&adapter_path).arg(&project_dir_str).output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
+
+    let mut child = Command::new(&adapter_path)
+        .arg(&project_dir_str)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let timeout = Duration::from_secs(30);
+
+    match child.wait_timeout(timeout)? {
+        Some(status) if status.success() => {
+            let mut stdout = String::new();
+            child.stdout.take().unwrap().read_to_string(&mut stdout)?;
+            parse_routes(&stdout)
+        }
+        Some(_) => {
+            let mut stderr = String::new();
+            child.stderr.take().unwrap().read_to_string(&mut stderr)?;
+            anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
+        }
+        None => {
+            child.kill()?;
+            child.wait()?;
+            anyhow::bail!("Adapter '{}' timed out after 30 seconds", adapter_name);
+        }
     }
-    parse_routes(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
