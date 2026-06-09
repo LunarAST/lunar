@@ -15,7 +15,7 @@ fn test_generate_lunar_map_basic() {
     map.insert("auth-service".to_string(), auth_actual);
     map.insert("user-service".to_string(), user_actual);
 
-    let lunar_map = generate_lunar_map(&map);
+    let lunar_map = generate_lunar_map(&map, &HashMap::new());
 
     // Check projects
     assert_eq!(lunar_map.projects.len(), 2);

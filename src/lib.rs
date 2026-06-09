@@ -25,6 +25,7 @@ pub struct RouteEntry {
     pub line_number: u32,
     pub extraction_method: String,
     #[serde(default)]
+    #[serde(rename = "targetProject")]
     pub target_project: Option<String>,
 }
 
@@ -33,15 +34,8 @@ impl RouteEntry {
         let mut path = String::new();
         for seg in &self.segments {
             match seg.segment_type.as_str() {
-                "literal" => {
-                    path.push('/');
-                    path.push_str(seg.value.as_ref().unwrap());
-                }
-                "parameter" => {
-                    path.push_str("/{");
-                    path.push_str(seg.name.as_ref().unwrap());
-                    path.push('}');
-                }
+                "literal" => { path.push('/'); path.push_str(seg.value.as_ref().unwrap()); }
+                "parameter" => { path.push_str("/{"); path.push_str(seg.name.as_ref().unwrap()); path.push('}'); }
                 "wildcard" => path.push_str("/*"),
                 _ => {}
             }
@@ -53,14 +47,8 @@ impl RouteEntry {
         let mut path = String::new();
         for seg in &self.segments {
             match seg.segment_type.as_str() {
-                "literal" => {
-                    path.push('/');
-                    path.push_str(seg.value.as_ref().unwrap());
-                }
-                "parameter" => {
-                    path.push_str("/:");
-                    path.push_str(seg.name.as_ref().unwrap());
-                }
+                "literal" => { path.push('/'); path.push_str(seg.value.as_ref().unwrap()); }
+                "parameter" => { path.push_str("/:"); path.push_str(seg.name.as_ref().unwrap()); }
                 "wildcard" => path.push_str("/*"),
                 _ => {}
             }
@@ -234,11 +222,21 @@ fn align_consumed_route(
     consumed: &RouteEntry,
     client_name: &str,
     project_map: &HashMap<String, &ActualJson>,
-) -> Option<AlignmentEntry> {
+    scan_status_map: &HashMap<String, String>,
+) -> (String, Option<String>) {
     let target = consumed.target_project.as_deref().unwrap_or("");
+
+    let target_scan_failed = !target.is_empty()
+        && scan_status_map.get(target).map_or(false, |s| s == "failed" || s == "stale");
+
+    if target_scan_failed {
+        return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string()));
+    }
+
     for (server_name, server_actual) in project_map {
         if server_name == client_name { continue; }
         if !target.is_empty() && target != *server_name { continue; }
+
         if let Some(server_route) = server_actual.exposed.iter().find(|r| r.structural_id() == consumed.structural_id()) {
             let result = compare_routes(consumed, server_route);
             let (status, warning) = match result {
@@ -247,13 +245,19 @@ fn align_consumed_route(
                 DiffResult::MethodChanged { .. } => ("MethodMismatch".to_string(), None),
                 _ => unreachable!(),
             };
-            return Some(AlignmentEntry { client_project: client_name.to_string(), server_project: server_name.clone(), path: consumed.to_path(), method: consumed.method.clone(), status, warning });
+
+            if scan_status_map.get(server_name).map_or(false, |s| s == "failed" || s == "stale") {
+                return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string()));
+            }
+
+            return (status, warning);
         }
     }
-    if !target.is_empty() {
-        Some(AlignmentEntry { client_project: client_name.to_string(), server_project: target.to_string(), path: consumed.to_path(), method: consumed.method.clone(), status: "Orphaned".to_string(), warning: None })
+
+    if target.is_empty() {
+        (String::new(), None)
     } else {
-        None
+        ("Orphaned".to_string(), None)
     }
 }
 
@@ -279,11 +283,15 @@ fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignm
     unused
 }
 
-pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>) -> LunarMap {
+pub fn generate_lunar_map(
+    project_actuals: &HashMap<String, ActualJson>,
+    scan_statuses: &HashMap<String, String>,
+) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();
 
     for (name, actual) in project_actuals {
+        let scan_status = scan_statuses.get(name).cloned().unwrap_or_else(|| "success".to_string());
         let interfaces = serde_json::json!({
             "exposed": actual.exposed.iter().map(|r| {
                 serde_json::json!({"path": r.to_path(), "method": r.method})
@@ -294,20 +302,28 @@ pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>) -> Luna
         });
         projects.push(ProjectInfo {
             name: name.clone(), project_type: "mixed".to_string(), sha: "unknown".to_string(),
-            scan_status: "success".to_string(), interfaces,
+            scan_status, interfaces,
         });
     }
 
     let project_map: HashMap<String, &ActualJson> = project_actuals.iter().map(|(k, v)| (k.clone(), v)).collect();
+    let scan_status_map: HashMap<String, String> = scan_statuses.clone();
+
     for (client_name, actual) in project_actuals {
         for consumed in &actual.consumed {
-            if let Some(entry) = align_consumed_route(consumed, client_name, &project_map) {
-                alignments.push(entry);
-            }
+            let (status, warning) = align_consumed_route(consumed, client_name, &project_map, &scan_status_map);
+            if status.is_empty() { continue; }
+            alignments.push(AlignmentEntry {
+                client_project: client_name.clone(),
+                server_project: consumed.target_project.as_deref().unwrap_or("unknown").to_string(),
+                path: consumed.to_path(),
+                method: consumed.method.clone(),
+                status,
+                warning,
+            });
         }
     }
 
-    // Build aggregated edges with port indices
     let mut edge_groups: HashMap<(String, String), Vec<&AlignmentEntry>> = HashMap::new();
     for entry in &alignments {
         let key = (entry.client_project.clone(), entry.server_project.clone());
@@ -317,36 +333,22 @@ pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>) -> Luna
     let aggregated_edges: Vec<AggregatedEdge> = edge_groups.into_iter().map(|((client, server), entries)| {
         let statuses: Vec<String> = entries.iter().map(|e| e.status.clone()).collect();
         let paths: Vec<String> = entries.iter().map(|e| format!("{} {}", e.method, e.path)).collect();
-
-        // Build port connections by looking up indices in the original ActualJson
         let mut ports = Vec::new();
         if let (Some(client_actual), Some(server_actual)) = (project_actuals.get(&client), project_actuals.get(&server)) {
             for entry in &entries {
-                let source_idx = client_actual.consumed.iter().position(|c| {
-                    c.to_path() == entry.path && c.method == entry.method
-                });
-                let target_idx = server_actual.exposed.iter().position(|e| {
-                    e.to_path() == entry.path && e.method == entry.method
-                });
+                let source_idx = client_actual.consumed.iter().position(|c| c.to_path() == entry.path && c.method == entry.method);
+                let target_idx = server_actual.exposed.iter().position(|e| e.to_path() == entry.path && e.method == entry.method);
                 if let (Some(si), Some(ti)) = (source_idx, target_idx) {
                     ports.push(PortConnection {
-                        path: entry.path.clone(),
-                        method: entry.method.clone(),
-                        status: entry.status.clone(),
-                        source_port_index: si,
-                        target_port_index: ti,
+                        path: entry.path.clone(), method: entry.method.clone(), status: entry.status.clone(),
+                        source_port_index: si, target_port_index: ti,
                     });
                 }
             }
         }
-
         AggregatedEdge {
-            client_project: client,
-            server_project: server,
-            call_count: entries.len(),
-            status: aggregate_status(&statuses),
-            paths,
-            ports,
+            client_project: client, server_project: server,
+            call_count: entries.len(), status: aggregate_status(&statuses), paths, ports,
         }
     }).collect();
 
@@ -356,11 +358,7 @@ pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>) -> Luna
         .map(|a| AnomalyEndpoint { project: a.client_project.clone(), path: a.path.clone(), method: a.method.clone() })
         .collect();
 
-    let anomalies = Anomalies {
-        unused_endpoints,
-        orphaned_consumers,
-        cross_layer_violations: vec![],
-    };
+    let anomalies = Anomalies { unused_endpoints, orphaned_consumers, cross_layer_violations: vec![] };
 
     LunarMap { version: "0.5.0".to_string(), projects, alignments, aggregated_edges, anomalies }
 }

@@ -162,7 +162,7 @@ fn map(config_path: &str, output: Option<&str>) -> Result<()> {
         project_actuals.insert(name.clone(), actual);
     }
 
-    let lunar_map = generate_lunar_map(&project_actuals);
+    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new());
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
     if let Some(out_path) = output {
         fs::write(out_path, output_json)?;
