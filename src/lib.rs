@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, ExitCode};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
@@ -337,9 +337,6 @@ pub fn find_adapter(name: &str) -> Option<String> {
     None
 }
 
-/// Spawn adapter subprocess with timeout.
-/// Uses the `wait-timeout` crate to block until the child exits or timeout expires.
-/// No polling — the OS handles the wait.
 pub fn run_adapter() -> anyhow::Result<Vec<RouteEntry>> {
     let project_dir = std::env::current_dir()?;
     let project_dir_str = project_dir.to_string_lossy().to_string();
@@ -395,4 +392,126 @@ pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
         if routes.len() != expected { anyhow::bail!("Count mismatch: expected {}, got {}", expected, routes.len()); }
     } else { anyhow::bail!("No end marker found"); }
     Ok(routes)
+}
+
+// ---------- Doctor ----------
+
+/// Run ecosystem health checks. Returns an exit code (0 = healthy, 1 = env error, 2 = data error).
+pub fn doctor_check() -> ExitCode {
+    let mut issues = 0u8;
+    let mut env_issues = 0u8;
+
+    println!("🔍 LunarAST Doctor — Ecosystem Health Check\n");
+
+    // Check 1: Project root
+    let cargo_path = Path::new("Cargo.toml");
+    if cargo_path.exists() {
+        println!("✅ Project: Rust project detected (Cargo.toml)");
+    } else {
+        println!("❌ Project: No Cargo.toml found");
+        println!("   → Ensure you run this command in a Rust project root.");
+        env_issues += 1;
+        issues += 1;
+    }
+
+    // Check 2: Adapter path detection (config override first, then PATH)
+    let config_path = Path::new(".lunar").join("config.yml");
+    let adapter_name = "lunar-extract-rust";
+    let adapter_source = if config_path.exists() {
+        if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&config_content) {
+                if let Some(adapters) = config.get("adapters") {
+                    if let Some(path) = adapters.get(adapter_name) {
+                        if let Some(path_str) = path.as_str() {
+                            let p = Path::new(path_str);
+                            if p.exists() {
+                                println!("✅ Adapter: {} found at {} [Config Overridden]", adapter_name, p.display());
+                                None
+                            } else {
+                                println!("❌ Adapter: Config override points to non-existent path: {}", path_str);
+                                env_issues += 1;
+                                issues += 1;
+                                Some("config override invalid".to_string())
+                            }
+                        } else { None }
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None }
+    } else {
+        None
+    };
+
+    // Fallback to PATH if no config override
+    if adapter_source.is_none() && !config_path.exists() {
+        match find_adapter(adapter_name) {
+            Some(path) => println!("✅ Adapter: {} found at {} [PATH]", adapter_name, path),
+            None => {
+                println!("❌ Adapter: {} not found in PATH", adapter_name);
+                println!("   → Install: cargo install lunar-extract-rust");
+                env_issues += 1;
+                issues += 1;
+            }
+        }
+    }
+
+    // Check 3: Adapter handshake test (skip if adapter not found)
+    if issues == 0 || env_issues == 0 {
+        match run_adapter() {
+            Ok(routes) => println!("✅ Adapter test: successfully extracted {} routes", routes.len()),
+            Err(e) => {
+                println!("❌ Adapter test: handshake failed — {}", e);
+                println!("   → Check adapter version and project structure.");
+                env_issues += 1;
+                issues += 1;
+            }
+        }
+    }
+
+    // Check 4: Physical facts cache (.interfaces-autogen.json)
+    let autogen_path = Path::new(".lunar").join(".interfaces-autogen.json");
+    if autogen_path.exists() {
+        println!("✅ Scan data: .lunar/.interfaces-autogen.json exists");
+    } else {
+        println!("❌ Scan data: .lunar/.interfaces-autogen.json missing");
+        println!("   → Run `lunar scan` to generate physical facts.");
+        env_issues += 1;
+        issues += 1;
+    }
+
+    // Check 5: Cache format validation
+    if autogen_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&autogen_path) {
+            if serde_json::from_str::<ActualJson>(&content).is_ok() {
+                println!("✅ Data format: valid JSON with exposed/consumed fields");
+            } else {
+                println!("❌ Data format: JSON corrupted or schema mismatch");
+                println!("   → Run `lunar scan` to regenerate.");
+                issues += 1;
+            }
+        }
+    }
+
+    // Check 6: Interfaces consistency
+    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
+    if interfaces_path.exists() {
+        println!("✅ Interfaces: .lunar/interfaces.yml exists");
+        // Full merge conflict detection not yet implemented
+        println!("   ⚠️  Merge conflict detection not yet implemented — coming in a future version.");
+    } else {
+        println!("⚠️  Interfaces: .lunar/interfaces.yml not found");
+        println!("   → Run `lunar sync --apply` to create it from scan data.");
+    }
+
+    println!();
+    if issues == 0 {
+        println!("🟢 All checks passed. Ecosystem is healthy.");
+        ExitCode::from(0)
+    } else if env_issues > 0 {
+        println!("🔴 {} environment issue(s) found.", env_issues);
+        ExitCode::from(1)
+    } else {
+        println!("🔴 {} data issue(s) found.", issues);
+        ExitCode::from(2)
+    }
 }
