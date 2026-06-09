@@ -51,7 +51,7 @@ lunar map -o lunar-map.json
 | `lunar scan` | Statically extract exposed and consumed routes via language adapters. Writes `.lunar/.interfaces-autogen.json`. |
 | `lunar diff` | Compare current routes with the last scan, showing added, removed, and modified interfaces (method changes, parameter name changes). |
 | `lunar sync --dry-run` | Preview changes that would be written to `.lunar/interfaces.yml`. |
-| `lunar sync --apply` | Backup the existing `interfaces.yml` and merge the latest scan results. |
+| `lunar sync --apply` | Backup existing `interfaces.yml`, scan `.lunar/suggestions/*.yaml` for pending AI or human-authored patches, **show a diff preview and prompt for confirmation**, perform field-level partial merge (⊕), write the updated `interfaces.yml`, and move processed suggestions to `.lunar/suggestions/merged/`. |
 | `lunar map` | Aggregate `actual.json` files from multiple projects into a global `lunar-map.json` (with per-port alignment data). |
 | `lunar doctor` | Run ecosystem health checks: adapter presence, scan data validity, cache integrity. Returns exit code 0 (healthy), 1 (environment error), or 2 (data error). |
 | `lunar cleanup --all` | Remove local scan cache files (`.lunar/.interfaces-autogen.json`). Requires interactive confirmation unless `--yes` is passed. |
