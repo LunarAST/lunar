@@ -1,7 +1,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use lunar::{ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig, generate_lunar_map, compare_routes, build_structural_index, run_adapter, DiffResult, doctor_check};
+use lunar::{ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig, generate_lunar_map, compare_routes, build_structural_index, run_adapter, DiffResult, doctor_check, cleanup_local};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -31,8 +31,16 @@ enum Commands {
         #[arg(short = 'o', long)]
         output: Option<String>,
     },
-    /// Run ecosystem health checks
     Doctor,
+    /// Remove local scan cache files (safe — does not delete interfaces.yml or backups)
+    Cleanup {
+        /// Remove all cache files
+        #[arg(long)]
+        all: bool,
+        /// Skip confirmation prompt (for CI use)
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn scan() -> Result<()> {
@@ -161,6 +169,7 @@ fn main() -> ExitCode {
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
         Commands::Map { config, output } => map(&config, output.as_deref()),
         Commands::Doctor => { return doctor_check(); }
+        Commands::Cleanup { all: _, yes } => cleanup_local(yes).map(|_| ()),
     };
     if let Err(e) = result {
         eprintln!("Error: {}", e);
