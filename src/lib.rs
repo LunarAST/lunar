@@ -2,13 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio, ExitCode};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
 // ---------- Data structures ----------
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteSegment {
     #[serde(rename = "type")]
     pub segment_type: String,
@@ -21,6 +22,7 @@ pub struct RouteSegment {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteEntry {
     pub method: String,
     pub segments: Vec<RouteSegment>,
@@ -28,7 +30,6 @@ pub struct RouteEntry {
     pub line_number: u32,
     pub extraction_method: String,
     #[serde(default)]
-    #[serde(rename = "targetProject")]
     pub target_project: Option<String>,
 }
 
@@ -351,7 +352,6 @@ pub fn run_adapter() -> anyhow::Result<Vec<RouteEntry>> {
         .spawn()?;
 
     let timeout = Duration::from_secs(30);
-
     match child.wait_timeout(timeout)? {
         Some(status) if status.success() => {
             let mut stdout = String::new();
@@ -396,28 +396,21 @@ pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
 
 // ---------- Doctor ----------
 
-/// Run ecosystem health checks. Returns an exit code (0 = healthy, 1 = env error, 2 = data error).
-pub fn doctor_check() -> ExitCode {
+pub fn doctor_check() -> std::process::ExitCode {
     let mut issues = 0u8;
     let mut env_issues = 0u8;
-
     println!("🔍 LunarAST Doctor — Ecosystem Health Check\n");
-
-    // Check 1: Project root
     let cargo_path = Path::new("Cargo.toml");
     if cargo_path.exists() {
         println!("✅ Project: Rust project detected (Cargo.toml)");
     } else {
         println!("❌ Project: No Cargo.toml found");
         println!("   → Ensure you run this command in a Rust project root.");
-        env_issues += 1;
-        issues += 1;
+        env_issues += 1; issues += 1;
     }
-
-    // Check 2: Adapter path detection (config override first, then PATH)
     let config_path = Path::new(".lunar").join("config.yml");
     let adapter_name = "lunar-extract-rust";
-    let adapter_source = if config_path.exists() {
+    let _adapter_source = if config_path.exists() {
         if let Ok(config_content) = std::fs::read_to_string(&config_path) {
             if let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&config_content) {
                 if let Some(adapters) = config.get("adapters") {
@@ -429,8 +422,7 @@ pub fn doctor_check() -> ExitCode {
                                 None
                             } else {
                                 println!("❌ Adapter: Config override points to non-existent path: {}", path_str);
-                                env_issues += 1;
-                                issues += 1;
+                                env_issues += 1; issues += 1;
                                 Some("config override invalid".to_string())
                             }
                         } else { None }
@@ -438,48 +430,35 @@ pub fn doctor_check() -> ExitCode {
                 } else { None }
             } else { None }
         } else { None }
-    } else {
-        None
-    };
-
-    // Fallback to PATH if no config override
-    if adapter_source.is_none() && !config_path.exists() {
+    } else { None };
+    if _adapter_source.is_none() && !config_path.exists() {
         match find_adapter(adapter_name) {
             Some(path) => println!("✅ Adapter: {} found at {} [PATH]", adapter_name, path),
             None => {
                 println!("❌ Adapter: {} not found in PATH", adapter_name);
                 println!("   → Install: cargo install lunar-extract-rust");
-                env_issues += 1;
-                issues += 1;
+                env_issues += 1; issues += 1;
             }
         }
     }
-
-    // Check 3: Adapter handshake test (skip if adapter not found)
     if issues == 0 || env_issues == 0 {
         match run_adapter() {
             Ok(routes) => println!("✅ Adapter test: successfully extracted {} routes", routes.len()),
             Err(e) => {
                 println!("❌ Adapter test: handshake failed — {}", e);
                 println!("   → Check adapter version and project structure.");
-                env_issues += 1;
-                issues += 1;
+                env_issues += 1; issues += 1;
             }
         }
     }
-
-    // Check 4: Physical facts cache (.interfaces-autogen.json)
     let autogen_path = Path::new(".lunar").join(".interfaces-autogen.json");
     if autogen_path.exists() {
         println!("✅ Scan data: .lunar/.interfaces-autogen.json exists");
     } else {
         println!("❌ Scan data: .lunar/.interfaces-autogen.json missing");
         println!("   → Run `lunar scan` to generate physical facts.");
-        env_issues += 1;
-        issues += 1;
+        env_issues += 1; issues += 1;
     }
-
-    // Check 5: Cache format validation
     if autogen_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&autogen_path) {
             if serde_json::from_str::<ActualJson>(&content).is_ok() {
@@ -491,83 +470,64 @@ pub fn doctor_check() -> ExitCode {
             }
         }
     }
-
-    // Check 6: Interfaces consistency
     let interfaces_path = Path::new(".lunar").join("interfaces.yml");
     if interfaces_path.exists() {
         println!("✅ Interfaces: .lunar/interfaces.yml exists");
-        // Full merge conflict detection not yet implemented
         println!("   ⚠️  Merge conflict detection not yet implemented — coming in a future version.");
     } else {
         println!("⚠️  Interfaces: .lunar/interfaces.yml not found");
         println!("   → Run `lunar sync --apply` to create it from scan data.");
     }
-
     println!();
     if issues == 0 {
         println!("🟢 All checks passed. Ecosystem is healthy.");
-        ExitCode::from(0)
+        std::process::ExitCode::from(0)
     } else if env_issues > 0 {
         println!("🔴 {} environment issue(s) found.", env_issues);
-        ExitCode::from(1)
+        std::process::ExitCode::from(1)
     } else {
         println!("🔴 {} data issue(s) found.", issues);
-        ExitCode::from(2)
+        std::process::ExitCode::from(2)
     }
 }
 
 // ---------- Cleanup ----------
 
-/// Remove local scan cache files. Returns list of removed files.
-/// Does NOT delete .lunar/.backup/ or .lunar/interfaces.yml.
 pub fn cleanup_local(force: bool) -> anyhow::Result<Vec<String>> {
     let lunar_dir = Path::new(".lunar");
     if !lunar_dir.exists() {
         println!("No .lunar/ directory found. Nothing to clean up.");
         return Ok(vec![]);
     }
-
     let candidates = vec![
         lunar_dir.join("route-ast-actual.json"),
         lunar_dir.join(".interfaces-autogen.json"),
     ];
-
     let to_remove: Vec<_> = candidates.into_iter().filter(|p| p.exists()).collect();
-
     if to_remove.is_empty() {
         println!("No cache files found. Nothing to clean up.");
         return Ok(vec![]);
     }
-
     println!("The following files will be removed:");
-    for f in &to_remove {
-        println!("  - {}", f.display());
-    }
+    for f in &to_remove { println!("  - {}", f.display()); }
     println!();
-
     if !force {
         println!("This action cannot be undone.");
         print!("Are you sure you want to continue? [y/N] ");
-        use std::io::Write;
-        std::io::stdout().flush()?;
+        std::io::Write::flush(&mut std::io::stdout())?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-        if input != "y" && input != "yes" {
+        if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
             println!("Cleanup cancelled.");
             return Ok(vec![]);
         }
     }
-
     let mut removed = Vec::new();
     for f in &to_remove {
         std::fs::remove_file(f)?;
         removed.push(f.display().to_string());
     }
-
-    for r in &removed {
-        println!("✓ Removed {}", r);
-    }
+    for r in &removed { println!("✓ Removed {}", r); }
     println!("Cleanup complete.");
     Ok(removed)
 }

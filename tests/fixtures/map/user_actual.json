@@ -1,8 +1,8 @@
 {
   "exposed": [
-    {"method":"POST","segments":[{"type":"literal","value":"users"}],"source_file":"user.rs","line_number":8,"extraction_method":"ast"}
+    {"method":"POST","segments":[{"type":"literal","value":"users"}],"sourceFile":"user.rs","lineNumber":8,"extractionMethod":"ast"}
   ],
   "consumed": [
-    {"method":"GET","segments":[{"type":"literal","value":"auth"},{"type":"literal","value":"verify"}],"source_file":"user.rs","line_number":15,"extraction_method":"ast","targetProject":"auth-service"}
+    {"method":"GET","segments":[{"type":"literal","value":"auth"},{"type":"literal","value":"verify"}],"sourceFile":"user.rs","lineNumber":15,"extractionMethod":"ast","targetProject":"auth-service"}
   ]
 }

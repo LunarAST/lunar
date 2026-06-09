@@ -1,4 +1,4 @@
 [
-  {"method":"GET","segments":[{"type":"literal","value":"users"},{"type":"parameter","name":"id"}],"source_file":"t.rs","line_number":1,"extraction_method":"ast"},
-  {"method":"GET","segments":[{"type":"literal","value":"users"},{"type":"parameter","name":"user_id"}],"source_file":"t.rs","line_number":2,"extraction_method":"ast"}
+  {"method":"GET","segments":[{"type":"literal","value":"users"},{"type":"parameter","name":"id"}],"sourceFile":"t.rs","lineNumber":1,"extractionMethod":"ast"},
+  {"method":"GET","segments":[{"type":"literal","value":"users"},{"type":"parameter","name":"user_id"}],"sourceFile":"t.rs","lineNumber":2,"extractionMethod":"ast"}
 ]
