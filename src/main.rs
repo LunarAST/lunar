@@ -40,15 +40,15 @@ fn scan() -> Result<()> {
     let routes = run_adapter()?;
     println!("✓ Count verified: {} routes extracted", routes.len());
     let actual = ActualJson { exposed: routes, consumed: vec![] };
-    let output_path = Path::new(".lunar").join("route-ast-actual.json");
+    let output_path = Path::new(".lunar").join(".interfaces-autogen.json");
     fs::create_dir_all(".lunar")?;
     fs::write(&output_path, serde_json::to_string_pretty(&actual)?)?;
-    println!("✓ Wrote actual.json to {}", output_path.display());
+    println!("✓ Wrote autogen.json to {}", output_path.display());
     Ok(())
 }
 
 fn diff() -> Result<()> {
-    let old_path = Path::new(".lunar").join("route-ast-actual.json");
+    let old_path = Path::new(".lunar").join(".interfaces-autogen.json");
     if !old_path.exists() {
         println!("No previous scan found. Run 'lunar scan' first.");
         return Ok(());
@@ -98,7 +98,7 @@ fn diff() -> Result<()> {
 fn sync(apply: bool, dry_run: bool) -> Result<()> {
     let interfaces_path = Path::new(".lunar").join("interfaces.yml");
     let backup_dir = Path::new(".lunar").join(".backup");
-    let actual_path = Path::new(".lunar").join("route-ast-actual.json");
+    let actual_path = Path::new(".lunar").join(".interfaces-autogen.json");
     if !actual_path.exists() { println!("No scan data found. Run 'lunar scan' first."); return Ok(()); }
     let actual: ActualJson = serde_json::from_str(&fs::read_to_string(&actual_path)?)?;
     let new_exposed: Vec<InterfaceItem> = actual.exposed.iter().map(|r| InterfaceItem {
