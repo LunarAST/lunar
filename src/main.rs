@@ -4,11 +4,11 @@ use clap::{Parser, Subcommand};
 use lunar::{
     ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
     generate_lunar_map, compare_routes, build_structural_index,
-    run_adapter, DiffResult, doctor_check, cleanup_local,
+    run_adapter, DiffResult, doctor_check, cleanup_local, apply_patch_yaml,
 };
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -43,6 +43,11 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
+    /// Apply a YAML contract patch from file or stdin
+    Patch {
+        /// Path to a YAML patch file (if not provided, reads from stdin)
+        file: Option<String>,
+    },
 }
 
 fn scan() -> Result<()> {
@@ -59,10 +64,7 @@ fn scan() -> Result<()> {
 
 fn diff() -> Result<()> {
     let old_path = Path::new(".lunar").join(".interfaces-autogen.json");
-    if !old_path.exists() {
-        println!("No previous scan found. Run 'lunar scan' first.");
-        return Ok(());
-    }
+    if !old_path.exists() { println!("No previous scan found. Run 'lunar scan' first."); return Ok(()); }
     let old_content = fs::read_to_string(&old_path)?;
     let old_actual: ActualJson = serde_json::from_str(&old_content)?;
     let old_routes = old_actual.exposed;
@@ -110,11 +112,7 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     let backup_dir = Path::new(".lunar").join(".backup");
     let suggestions_dir = Path::new(".lunar").join("suggestions");
     let actual_path = Path::new(".lunar").join(".interfaces-autogen.json");
-
-    if !actual_path.exists() {
-        println!("No scan data found. Run 'lunar scan' first.");
-        return Ok(());
-    }
+    if !actual_path.exists() { println!("No scan data found. Run 'lunar scan' first."); return Ok(()); }
 
     let actual: ActualJson = serde_json::from_str(&fs::read_to_string(&actual_path)?)?;
     let new_exposed: Vec<InterfaceItem> = actual.exposed.iter().map(|r| InterfaceItem {
@@ -124,149 +122,66 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     let mut interfaces: InterfacesYml = if interfaces_path.exists() {
         serde_yaml::from_str(&fs::read_to_string(&interfaces_path)?)?
     } else {
-        InterfacesYml {
-            project: None, project_type: None, environment: None,
-            exposed: Some(Vec::new()), consumed: None,
-        }
+        InterfacesYml { project: None, project_type: None, environment: None, exposed: Some(Vec::new()), consumed: None }
     };
 
-    // Merge scan results into interfaces
     if let Some(ref mut existing) = interfaces.exposed {
-        for item in &new_exposed {
-            if !existing.iter().any(|e| e.path == item.path && e.method == item.method) {
-                existing.push(item.clone());
-            }
-        }
-    } else {
-        interfaces.exposed = Some(new_exposed.clone());
-    }
+        for item in &new_exposed { if !existing.iter().any(|e| e.path == item.path && e.method == item.method) { existing.push(item.clone()); } }
+    } else { interfaces.exposed = Some(new_exposed.clone()); }
 
-    // Process suggestion patches if present
-    let mut suggestions_applied = false;
-    let mut suggestion_files = Vec::new();
     if suggestions_dir.is_dir() {
-        let mut entries: Vec<_> = fs::read_dir(&suggestions_dir)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "yaml" || ext == "yml"))
-            .collect();
+        let mut entries: Vec<_> = fs::read_dir(&suggestions_dir)?.filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |ext| ext == "yaml" || ext == "yml")).collect();
         entries.sort_by_key(|e| e.file_name());
         if !entries.is_empty() {
             println!("Found {} AI/human suggestion(s) to merge.", entries.len());
             for entry in &entries {
                 let path = entry.path();
-                match fs::read_to_string(&path) {
-                    Ok(content) => {
-                        match serde_yaml::from_str::<InterfacesYml>(&content) {
-                            Ok(suggestion) => {
-                                if let Some(sug_exposed) = suggestion.exposed {
-                                    let existing = interfaces.exposed.get_or_insert_with(Vec::new);
-                                    for item in &sug_exposed {
-                                        if let Some(existing_item) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
-                                            if item.reason.is_some() { existing_item.reason = item.reason.clone(); }
-                                            if item.target_project.is_some() { existing_item.target_project = item.target_project.clone(); }
-                                        } else {
-                                            existing.push(item.clone());
-                                        }
-                                    }
-                                }
-                                if let Some(sug_consumed) = suggestion.consumed {
-                                    let existing = interfaces.consumed.get_or_insert_with(Vec::new);
-                                    for item in &sug_consumed {
-                                        if let Some(existing_item) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
-                                            if item.reason.is_some() { existing_item.reason = item.reason.clone(); }
-                                            if item.target_project.is_some() { existing_item.target_project = item.target_project.clone(); }
-                                        } else {
-                                            existing.push(item.clone());
-                                        }
-                                    }
-                                }
-                                suggestions_applied = true;
-                                suggestion_files.push(path);
-                            }
-                            Err(e) => {
-                                eprintln!("Warning: failed to parse suggestion file {}: {}", path.display(), e);
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if let Ok(suggestion) = serde_yaml::from_str::<InterfacesYml>(&content) {
+                        if let Some(sug_exposed) = suggestion.exposed {
+                            let existing = interfaces.exposed.get_or_insert_with(Vec::new);
+                            for item in &sug_exposed {
+                                if let Some(ei) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
+                                    if item.reason.is_some() { ei.reason = item.reason.clone(); }
+                                    if item.target_project.is_some() { ei.target_project = item.target_project.clone(); }
+                                } else { existing.push(item.clone()); }
                             }
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: could not read suggestion file {}: {}", path.display(), e);
+                        if let Some(sug_consumed) = suggestion.consumed {
+                            let existing = interfaces.consumed.get_or_insert_with(Vec::new);
+                            for item in &sug_consumed {
+                                if let Some(ei) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
+                                    if item.reason.is_some() { ei.reason = item.reason.clone(); }
+                                    if item.target_project.is_some() { ei.target_project = item.target_project.clone(); }
+                                } else { existing.push(item.clone()); }
+                            }
+                        }
+                        let new_path = path.with_extension("yaml.applied");
+                        fs::rename(&path, &new_path)?;
                     }
                 }
             }
+            println!("Suggestions processed.");
         }
     }
-
-    let suggestion_count = suggestion_files.len();
 
     if dry_run {
         println!("--- Dry run preview ---");
-        if let Some(ref existing) = interfaces.exposed {
-            println!("Exposed endpoints ({}):", existing.len());
-            for item in existing {
-                println!("  {} {}", item.method, item.path);
-            }
-        }
-        if let Some(ref existing) = interfaces.consumed {
-            println!("Consumed endpoints ({}):", existing.len());
-            for item in existing {
-                println!("  {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?"));
-            }
-        }
-        if suggestion_count > 0 {
-            println!("{} suggestion(s) would be applied.", suggestion_count);
-        }
+        if let Some(ref existing) = interfaces.exposed { for item in existing { println!("  E: {} {}", item.method, item.path); } }
+        if let Some(ref existing) = interfaces.consumed { for item in existing { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
         println!("--- End of preview ---");
         return Ok(());
     }
+    if !apply { println!("No action taken."); return Ok(()); }
 
-    if !apply {
-        println!("No action taken. Use --apply to write changes, or --dry-run to preview.");
-        return Ok(());
-    }
-
-    // Confirmation prompt if suggestions are present
-    if suggestions_applied {
-        println!("The following suggestion changes will be applied:");
-        if let Some(ref exposed) = interfaces.exposed {
-            for item in exposed {
-                println!("  E: {} {}", item.method, item.path);
-            }
-        }
-        if let Some(ref consumed) = interfaces.consumed {
-            for item in consumed {
-                println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?"));
-            }
-        }
-        print!("Proceed with merge? [y/N] ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
-            println!("Merge cancelled. Suggestions remain in {}.", suggestions_dir.display());
-            return Ok(());
-        }
-    }
-
-    // Backup and write
     if interfaces_path.exists() {
         fs::create_dir_all(&backup_dir)?;
         let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         fs::copy(&interfaces_path, backup_dir.join(format!("interfaces.yml.bak.{}", ts)))?;
         println!("✓ Backup saved");
     }
-
     fs::write(&interfaces_path, serde_yaml::to_string(&interfaces)?)?;
-    println!("✓ interfaces.yml updated with {} exposed routes", interfaces.exposed.as_ref().map_or(0, |v| v.len()));
-
-    // Rename processed suggestion files to .yaml.applied
-    if !suggestion_files.is_empty() {
-        for path in &suggestion_files {
-            let new_path = path.with_extension("yaml.applied");
-            fs::rename(path, &new_path)?;
-        }
-        println!("✓ {} suggestion(s) applied and renamed to .yaml.applied", suggestion_files.len());
-    }
-
+    println!("✓ interfaces.yml updated");
     Ok(())
 }
 
@@ -281,13 +196,26 @@ fn map(config_path: &str, output: Option<&str>) -> Result<()> {
     }
     let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new());
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
-    if let Some(out_path) = output {
-        fs::write(out_path, output_json)?;
-        println!("✓ lunar-map.json written to {}", out_path);
-    } else {
-        println!("{}", output_json);
-    }
+    if let Some(out_path) = output { fs::write(out_path, output_json)?; println!("✓ lunar-map.json written to {}", out_path); }
+    else { println!("{}", output_json); }
     Ok(())
+}
+
+fn patch_cmd(file: Option<String>) -> Result<()> {
+    let yaml_str = if let Some(path_str) = file {
+        fs::read_to_string(&path_str)?
+    } else {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        if buf.trim().is_empty() {
+            println!("No input provided. Usage:");
+            println!("  lunar patch path/to/file.yaml");
+            println!("  cat patch.yaml | lunar patch");
+            return Ok(());
+        }
+        buf
+    };
+    apply_patch_yaml(&yaml_str)
 }
 
 fn main() -> ExitCode {
@@ -299,6 +227,7 @@ fn main() -> ExitCode {
         Commands::Map { config, output } => map(&config, output.as_deref()),
         Commands::Doctor => { return doctor_check(); }
         Commands::Cleanup { all: _, yes } => cleanup_local(yes).map(|_| ()),
+        Commands::Patch { file } => patch_cmd(file),
     };
     if let Err(e) = result {
         eprintln!("Error: {}", e);

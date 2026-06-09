@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Read;
+use std::fs;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -222,18 +223,10 @@ pub struct LunarMap {
     pub anomalies: Anomalies,
 }
 
-fn align_consumed_route(
-    consumed: &RouteEntry,
-    client_name: &str,
-    project_map: &HashMap<String, &ActualJson>,
-    scan_status_map: &HashMap<String, String>,
-) -> (String, Option<String>) {
+fn align_consumed_route(consumed: &RouteEntry, client_name: &str, project_map: &HashMap<String, &ActualJson>, scan_status_map: &HashMap<String, String>) -> (String, Option<String>) {
     let target = consumed.target_project.as_deref().unwrap_or("");
-    let target_scan_failed = !target.is_empty()
-        && scan_status_map.get(target).map_or(false, |s| s == "failed" || s == "stale");
-    if target_scan_failed {
-        return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string()));
-    }
+    let target_scan_failed = !target.is_empty() && scan_status_map.get(target).map_or(false, |s| s == "failed" || s == "stale");
+    if target_scan_failed { return ("Unverified".to_string(), Some("Server project scan failed or stale".to_string())); }
     for (server_name, server_actual) in project_map {
         if server_name == client_name { continue; }
         if !target.is_empty() && target != *server_name { continue; }
@@ -251,14 +244,11 @@ fn align_consumed_route(
             return (status, warning);
         }
     }
-    if target.is_empty() { (String::new(), None) }
-    else { ("Orphaned".to_string(), None) }
+    if target.is_empty() { (String::new(), None) } else { ("Orphaned".to_string(), None) }
 }
 
 fn aggregate_status(statuses: &[String]) -> String {
-    let priority = |s: &str| -> usize {
-        match s { "MethodMismatch" => 0, "Orphaned" => 1, "ParamNameMismatch" => 2, "Aligned" => 3, _ => 4 }
-    };
+    let priority = |s: &str| -> usize { match s { "MethodMismatch" => 0, "Orphaned" => 1, "ParamNameMismatch" => 2, "Aligned" => 3, _ => 4 } };
     statuses.iter().min_by_key(|s| priority(s)).cloned().unwrap_or_else(|| "Aligned".to_string())
 }
 
@@ -266,21 +256,14 @@ fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignm
     let mut unused = Vec::new();
     for (name, actual) in project_actuals {
         for exposed in &actual.exposed {
-            let consumed_by_any = alignments.iter().any(|a| {
-                a.server_project == *name && a.path == exposed.to_path() && a.method == exposed.method && a.status != "Orphaned"
-            });
-            if !consumed_by_any {
-                unused.push(AnomalyEndpoint { project: name.clone(), path: exposed.to_path(), method: exposed.method.clone() });
-            }
+            let consumed_by_any = alignments.iter().any(|a| a.server_project == *name && a.path == exposed.to_path() && a.method == exposed.method && a.status != "Orphaned");
+            if !consumed_by_any { unused.push(AnomalyEndpoint { project: name.clone(), path: exposed.to_path(), method: exposed.method.clone() }); }
         }
     }
     unused
 }
 
-pub fn generate_lunar_map(
-    project_actuals: &HashMap<String, ActualJson>,
-    scan_statuses: &HashMap<String, String>,
-) -> LunarMap {
+pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_statuses: &HashMap<String, String>) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();
     for (name, actual) in project_actuals {
@@ -344,13 +327,7 @@ pub fn run_adapter() -> anyhow::Result<Vec<RouteEntry>> {
     let adapter_name = if project_dir.join("Cargo.toml").exists() { "lunar-extract-rust" }
     else { anyhow::bail!("Could not detect project language. Currently supported: Rust (Cargo.toml found)."); };
     let adapter_path = find_adapter(adapter_name).ok_or_else(|| anyhow::anyhow!("Adapter '{}' not found in PATH.", adapter_name))?;
-
-    let mut child = Command::new(&adapter_path)
-        .arg(&project_dir_str)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-
+    let mut child = Command::new(&adapter_path).arg(&project_dir_str).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
     let timeout = Duration::from_secs(30);
     match child.wait_timeout(timeout)? {
         Some(status) if status.success() => {
@@ -363,11 +340,7 @@ pub fn run_adapter() -> anyhow::Result<Vec<RouteEntry>> {
             child.stderr.take().unwrap().read_to_string(&mut stderr)?;
             anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
         }
-        None => {
-            child.kill()?;
-            child.wait()?;
-            anyhow::bail!("Adapter '{}' timed out after 30 seconds", adapter_name);
-        }
+        None => { child.kill()?; child.wait()?; anyhow::bail!("Adapter '{}' timed out after 30 seconds", adapter_name); }
     }
 }
 
@@ -378,20 +351,75 @@ pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
         if line.is_empty() { continue; }
         if line.contains("\"_lunar\"") {
             let marker: serde_json::Value = serde_json::from_str(line)?;
-            if marker["_lunar"]["status"] == "success" {
-                count_from_marker = Some(marker["_lunar"]["count"].as_u64().unwrap() as usize);
-            } else if marker["_lunar"]["status"] == "error" {
-                let msg = marker["_lunar"]["message"].as_str().unwrap_or("unknown error");
-                anyhow::bail!("Adapter reported error: {}", msg);
-            }
+            if marker["_lunar"]["status"] == "success" { count_from_marker = Some(marker["_lunar"]["count"].as_u64().unwrap() as usize); }
+            else if marker["_lunar"]["status"] == "error" { let msg = marker["_lunar"]["message"].as_str().unwrap_or("unknown error"); anyhow::bail!("Adapter reported error: {}", msg); }
             continue;
         }
         routes.push(serde_json::from_str(line)?);
     }
-    if let Some(expected) = count_from_marker {
-        if routes.len() != expected { anyhow::bail!("Count mismatch: expected {}, got {}", expected, routes.len()); }
-    } else { anyhow::bail!("No end marker found"); }
+    if let Some(expected) = count_from_marker { if routes.len() != expected { anyhow::bail!("Count mismatch: expected {}, got {}", expected, routes.len()); } }
+    else { anyhow::bail!("No end marker found"); }
     Ok(routes)
+}
+
+// ---------- Patch application ----------
+
+/// Apply a YAML patch string to the current project interfaces.
+/// Backs up the old interfaces.yml and prompts for confirmation.
+pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
+    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
+    let backup_dir = Path::new(".lunar").join(".backup");
+
+    let patch: InterfacesYml = serde_yaml::from_str(yaml_str)
+        .map_err(|e| anyhow::anyhow!("Invalid YAML patch: {}", e))?;
+
+    let mut interfaces: InterfacesYml = if interfaces_path.exists() {
+        serde_yaml::from_str(&fs::read_to_string(&interfaces_path)?)?
+    } else {
+        InterfacesYml { project: None, project_type: None, environment: None, exposed: Some(Vec::new()), consumed: None }
+    };
+
+    if let Some(p_exposed) = patch.exposed {
+        let existing = interfaces.exposed.get_or_insert_with(Vec::new);
+        for item in &p_exposed {
+            if let Some(ei) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
+                if item.reason.is_some() { ei.reason = item.reason.clone(); }
+                if item.target_project.is_some() { ei.target_project = item.target_project.clone(); }
+            } else { existing.push(item.clone()); }
+        }
+    }
+    if let Some(p_consumed) = patch.consumed {
+        let existing = interfaces.consumed.get_or_insert_with(Vec::new);
+        for item in &p_consumed {
+            if let Some(ei) = existing.iter_mut().find(|e| e.path == item.path && e.method == item.method) {
+                if item.reason.is_some() { ei.reason = item.reason.clone(); }
+                if item.target_project.is_some() { ei.target_project = item.target_project.clone(); }
+            } else { existing.push(item.clone()); }
+        }
+    }
+
+    println!("Changes to be applied:");
+    if let Some(ref exposed) = interfaces.exposed { for item in exposed { println!("  E: {} {}", item.method, item.path); } }
+    if let Some(ref consumed) = interfaces.consumed { for item in consumed { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
+
+    print!("Proceed with merge? [y/N] ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
+        println!("Merge cancelled.");
+        return Ok(());
+    }
+
+    if interfaces_path.exists() {
+        fs::create_dir_all(&backup_dir)?;
+        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        fs::copy(&interfaces_path, backup_dir.join(format!("interfaces.yml.bak.{}", ts)))?;
+        println!("✓ Backup saved");
+    }
+    fs::write(&interfaces_path, serde_yaml::to_string(&interfaces)?)?;
+    println!("✓ interfaces.yml updated");
+    Ok(())
 }
 
 // ---------- Doctor ----------
@@ -400,31 +428,18 @@ pub fn doctor_check() -> std::process::ExitCode {
     let mut issues = 0u8;
     let mut env_issues = 0u8;
     println!("🔍 LunarAST Doctor — Ecosystem Health Check\n");
-    let cargo_path = Path::new("Cargo.toml");
-    if cargo_path.exists() {
-        println!("✅ Project: Rust project detected (Cargo.toml)");
-    } else {
-        println!("❌ Project: No Cargo.toml found");
-        println!("   → Ensure you run this command in a Rust project root.");
-        env_issues += 1; issues += 1;
-    }
+    if Path::new("Cargo.toml").exists() { println!("✅ Project: Rust project detected (Cargo.toml)"); }
+    else { println!("❌ Project: No Cargo.toml found"); env_issues += 1; issues += 1; }
     let config_path = Path::new(".lunar").join("config.yml");
     let adapter_name = "lunar-extract-rust";
     let _adapter_source = if config_path.exists() {
-        if let Ok(config_content) = std::fs::read_to_string(&config_path) {
+        if let Ok(config_content) = fs::read_to_string(&config_path) {
             if let Ok(config) = serde_yaml::from_str::<serde_yaml::Value>(&config_content) {
                 if let Some(adapters) = config.get("adapters") {
                     if let Some(path) = adapters.get(adapter_name) {
                         if let Some(path_str) = path.as_str() {
-                            let p = Path::new(path_str);
-                            if p.exists() {
-                                println!("✅ Adapter: {} found at {} [Config Overridden]", adapter_name, p.display());
-                                None
-                            } else {
-                                println!("❌ Adapter: Config override points to non-existent path: {}", path_str);
-                                env_issues += 1; issues += 1;
-                                Some("config override invalid".to_string())
-                            }
+                            if Path::new(path_str).exists() { println!("✅ Adapter: {} found at {} [Config Overridden]", adapter_name, path_str); None }
+                            else { println!("❌ Adapter: Config override points to non-existent path: {}", path_str); env_issues += 1; issues += 1; Some("config override invalid".to_string()) }
                         } else { None }
                     } else { None }
                 } else { None }
@@ -434,99 +449,54 @@ pub fn doctor_check() -> std::process::ExitCode {
     if _adapter_source.is_none() && !config_path.exists() {
         match find_adapter(adapter_name) {
             Some(path) => println!("✅ Adapter: {} found at {} [PATH]", adapter_name, path),
-            None => {
-                println!("❌ Adapter: {} not found in PATH", adapter_name);
-                println!("   → Install: cargo install lunar-extract-rust");
-                env_issues += 1; issues += 1;
-            }
+            None => { println!("❌ Adapter: {} not found in PATH", adapter_name); env_issues += 1; issues += 1; }
         }
     }
     if issues == 0 || env_issues == 0 {
         match run_adapter() {
             Ok(routes) => println!("✅ Adapter test: successfully extracted {} routes", routes.len()),
-            Err(e) => {
-                println!("❌ Adapter test: handshake failed — {}", e);
-                println!("   → Check adapter version and project structure.");
-                env_issues += 1; issues += 1;
-            }
+            Err(e) => { println!("❌ Adapter test: handshake failed — {}", e); env_issues += 1; issues += 1; }
         }
     }
     let autogen_path = Path::new(".lunar").join(".interfaces-autogen.json");
+    if autogen_path.exists() { println!("✅ Scan data: .lunar/.interfaces-autogen.json exists"); }
+    else { println!("❌ Scan data: .lunar/.interfaces-autogen.json missing"); env_issues += 1; issues += 1; }
     if autogen_path.exists() {
-        println!("✅ Scan data: .lunar/.interfaces-autogen.json exists");
-    } else {
-        println!("❌ Scan data: .lunar/.interfaces-autogen.json missing");
-        println!("   → Run `lunar scan` to generate physical facts.");
-        env_issues += 1; issues += 1;
-    }
-    if autogen_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&autogen_path) {
-            if serde_json::from_str::<ActualJson>(&content).is_ok() {
-                println!("✅ Data format: valid JSON with exposed/consumed fields");
-            } else {
-                println!("❌ Data format: JSON corrupted or schema mismatch");
-                println!("   → Run `lunar scan` to regenerate.");
-                issues += 1;
-            }
+        if let Ok(content) = fs::read_to_string(&autogen_path) {
+            if serde_json::from_str::<ActualJson>(&content).is_ok() { println!("✅ Data format: valid JSON with exposed/consumed fields"); }
+            else { println!("❌ Data format: JSON corrupted or schema mismatch"); issues += 1; }
         }
     }
     let interfaces_path = Path::new(".lunar").join("interfaces.yml");
-    if interfaces_path.exists() {
-        println!("✅ Interfaces: .lunar/interfaces.yml exists");
-        println!("   ⚠️  Merge conflict detection not yet implemented — coming in a future version.");
-    } else {
-        println!("⚠️  Interfaces: .lunar/interfaces.yml not found");
-        println!("   → Run `lunar sync --apply` to create it from scan data.");
-    }
+    if interfaces_path.exists() { println!("✅ Interfaces: .lunar/interfaces.yml exists"); }
+    else { println!("⚠️  Interfaces: .lunar/interfaces.yml not found"); }
     println!();
-    if issues == 0 {
-        println!("🟢 All checks passed. Ecosystem is healthy.");
-        std::process::ExitCode::from(0)
-    } else if env_issues > 0 {
-        println!("🔴 {} environment issue(s) found.", env_issues);
-        std::process::ExitCode::from(1)
-    } else {
-        println!("🔴 {} data issue(s) found.", issues);
-        std::process::ExitCode::from(2)
-    }
+    if issues == 0 { println!("🟢 All checks passed. Ecosystem is healthy."); std::process::ExitCode::from(0) }
+    else if env_issues > 0 { println!("🔴 {} environment issue(s) found.", env_issues); std::process::ExitCode::from(1) }
+    else { println!("🔴 {} data issue(s) found.", issues); std::process::ExitCode::from(2) }
 }
 
 // ---------- Cleanup ----------
 
 pub fn cleanup_local(force: bool) -> anyhow::Result<Vec<String>> {
     let lunar_dir = Path::new(".lunar");
-    if !lunar_dir.exists() {
-        println!("No .lunar/ directory found. Nothing to clean up.");
-        return Ok(vec![]);
-    }
-    let candidates = vec![
-        lunar_dir.join("route-ast-actual.json"),
-        lunar_dir.join(".interfaces-autogen.json"),
-    ];
+    if !lunar_dir.exists() { println!("No .lunar/ directory found. Nothing to clean up."); return Ok(vec![]); }
+    let candidates = vec![lunar_dir.join("route-ast-actual.json"), lunar_dir.join(".interfaces-autogen.json")];
     let to_remove: Vec<_> = candidates.into_iter().filter(|p| p.exists()).collect();
-    if to_remove.is_empty() {
-        println!("No cache files found. Nothing to clean up.");
-        return Ok(vec![]);
-    }
+    if to_remove.is_empty() { println!("No cache files found. Nothing to clean up."); return Ok(vec![]); }
     println!("The following files will be removed:");
     for f in &to_remove { println!("  - {}", f.display()); }
     println!();
     if !force {
         println!("This action cannot be undone.");
         print!("Are you sure you want to continue? [y/N] ");
-        std::io::Write::flush(&mut std::io::stdout())?;
+        io::stdout().flush()?;
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
-            println!("Cleanup cancelled.");
-            return Ok(vec![]);
-        }
+        io::stdin().read_line(&mut input)?;
+        if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" { println!("Cleanup cancelled."); return Ok(vec![]); }
     }
     let mut removed = Vec::new();
-    for f in &to_remove {
-        std::fs::remove_file(f)?;
-        removed.push(f.display().to_string());
-    }
+    for f in &to_remove { fs::remove_file(f)?; removed.push(f.display().to_string()); }
     for r in &removed { println!("✓ Removed {}", r); }
     println!("Cleanup complete.");
     Ok(removed)
