@@ -54,7 +54,7 @@ fn scan() -> Result<()> {
     println!("Scanning project...");
     let routes = run_adapter()?;
     println!("✓ Count verified: {} routes extracted", routes.len());
-    let actual = ActualJson { exposed: routes, consumed: vec![] };
+    let actual = ActualJson { exposed: routes, consumed: vec![], project_type: None };
     let output_path = Path::new(".lunar").join(".interfaces-autogen.json");
     fs::create_dir_all(".lunar")?;
     fs::write(&output_path, serde_json::to_string_pretty(&actual)?)?;

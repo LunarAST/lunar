@@ -84,6 +84,8 @@ impl RouteEntry {
 pub struct ActualJson {
     pub exposed: Vec<RouteEntry>,
     pub consumed: Vec<RouteEntry>,
+    #[serde(default)]
+    pub project_type: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -255,6 +257,10 @@ fn aggregate_status(statuses: &[String]) -> String {
 fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignments: &[AlignmentEntry]) -> Vec<AnomalyEndpoint> {
     let mut unused = Vec::new();
     for (name, actual) in project_actuals {
+        // Skip library projects — they don't have "exposed" in the network sense
+        if actual.project_type.as_deref() == Some("library") {
+            continue;
+        }
         for exposed in &actual.exposed {
             let consumed_by_any = alignments.iter().any(|a| a.server_project == *name && a.path == exposed.to_path() && a.method == exposed.method && a.status != "Orphaned");
             if !consumed_by_any { unused.push(AnomalyEndpoint { project: name.clone(), path: exposed.to_path(), method: exposed.method.clone() }); }
@@ -268,11 +274,12 @@ pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_st
     let mut alignments = Vec::new();
     for (name, actual) in project_actuals {
         let scan_status = scan_statuses.get(name).cloned().unwrap_or_else(|| "success".to_string());
+        let project_type = actual.project_type.clone().unwrap_or_else(|| "mixed".to_string());
         let interfaces = serde_json::json!({
             "exposed": actual.exposed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method})).collect::<Vec<_>>(),
             "consumed": actual.consumed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method, "targetProject": r.target_project.as_deref().unwrap_or("unknown")})).collect::<Vec<_>>(),
         });
-        projects.push(ProjectInfo { name: name.clone(), project_type: "mixed".to_string(), sha: "unknown".to_string(), scan_status, interfaces });
+        projects.push(ProjectInfo { name: name.clone(), project_type, sha: "unknown".to_string(), scan_status, interfaces });
     }
     let project_map: HashMap<String, &ActualJson> = project_actuals.iter().map(|(k, v)| (k.clone(), v)).collect();
     let scan_status_map = scan_statuses.clone();
@@ -364,7 +371,6 @@ pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
 
 // ---------- Patch application ----------
 
-/// Load known project names from a repos.json-like file (just the array of project names).
 fn load_known_projects() -> Vec<String> {
     let candidates: Vec<std::path::PathBuf> = vec![
         Path::new("repos.json").to_path_buf(),
@@ -384,8 +390,6 @@ fn load_known_projects() -> Vec<String> {
     Vec::new()
 }
 
-/// Apply a YAML patch string to the current project interfaces.
-/// Backs up the old interfaces.yml and prompts for confirmation.
 pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
     let interfaces_path = Path::new(".lunar").join("interfaces.yml");
     let backup_dir = Path::new(".lunar").join(".backup");
@@ -393,10 +397,7 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
     let patch: InterfacesYml = serde_yaml::from_str(yaml_str)
         .map_err(|e| anyhow::anyhow!("Invalid YAML patch: {}", e))?;
 
-    // Load known projects for name validation
     let known_projects = load_known_projects();
-
-    // Validate targetProject names against known projects
     if let Some(ref consumed) = patch.consumed {
         for item in consumed {
             if let Some(ref target) = item.target_project {
@@ -434,7 +435,6 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
         }
     }
 
-    // If the patch sets project type, apply it
     if patch.project_type.is_some() {
         interfaces.project_type = patch.project_type.clone();
     }
@@ -445,10 +445,11 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
     println!("Changes to be applied:");
     if let Some(ref exposed) = interfaces.exposed { for item in exposed { println!("  E: {} {}", item.method, item.path); } }
     if let Some(ref consumed) = interfaces.consumed { for item in consumed { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
-    if let Some(ref pt) = interfaces.project_type { println!("  Project type: {}", pt); }    print!("Proceed with merge? [y/N] ");
+    if let Some(ref pt) = interfaces.project_type { println!("  Project type: {}", pt); }
+
+    print!("Proceed with merge? [y/N] ");
     io::stdout().flush()?;
     let mut input = String::new();
-    // Read from /dev/tty to avoid conflict with piped stdin
     if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(&mut tty);
@@ -474,8 +475,11 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
 
 // ---------- Intent overlay merge ----------
 
-/// Merge intent overlay (interfaces.yml) into physical facts (ActualJson).
 pub fn merge_intent_into_actual(actual: &mut ActualJson, intent: &InterfacesYml) {
+    // Transfer project type from intent to actual for downstream use
+    if let Some(ref pt) = intent.project_type {
+        actual.project_type = Some(pt.clone());
+    }
     if let Some(ref intent_exposed) = intent.exposed {
         for intent_item in intent_exposed {
             if let Some(existing) = actual.exposed.iter_mut().find(|e| e.to_path() == intent_item.path && e.method == intent_item.method) {
@@ -580,23 +584,24 @@ pub fn doctor_check() -> std::process::ExitCode {
 pub fn cleanup_local(force: bool) -> anyhow::Result<Vec<String>> {
     let lunar_dir = Path::new(".lunar");
     if !lunar_dir.exists() { println!("No .lunar/ directory found. Nothing to clean up."); return Ok(vec![]); }
-    let candidates: Vec<std::path::PathBuf> = vec![lunar_dir.join("route-ast-actual.json"), lunar_dir.join(".interfaces-autogen.json")];
+    let candidates = vec![lunar_dir.join("route-ast-actual.json"), lunar_dir.join(".interfaces-autogen.json")];
     let to_remove: Vec<_> = candidates.into_iter().filter(|p| p.exists()).collect();
     if to_remove.is_empty() { println!("No cache files found. Nothing to clean up."); return Ok(vec![]); }
     println!("The following files will be removed:");
     for f in &to_remove { println!("  - {}", f.display()); }
     println!();
     if !force {
-        println!("This action cannot be undone.");    print!("Are you sure you want to continue? [y/N] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
-        use std::io::BufRead;
-        let mut reader = std::io::BufReader::new(&mut tty);
-        reader.read_line(&mut input)?;
-    } else {
-        io::stdin().read_line(&mut input)?;
-    }
+        println!("This action cannot be undone.");
+        print!("Are you sure you want to continue? [y/N] ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(&mut tty);
+            reader.read_line(&mut input)?;
+        } else {
+            io::stdin().read_line(&mut input)?;
+        }
         if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" { println!("Cleanup cancelled."); return Ok(vec![]); }
     }
     let mut removed = Vec::new();
