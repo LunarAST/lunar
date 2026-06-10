@@ -48,7 +48,7 @@ lunar map -o lunar-map.json
 | Command | Description |
 |:---|:---|
 | `lunar init` | Initialize `.lunar/interfaces.yml` if it does not exist. |
-| `lunar scan` | Statically extract exposed and consumed routes via language adapters. Writes `.lunar/.interfaces-autogen.json`. |
+| `lunar scan` | Statically extract routes via language adapters. For Rust projects, supports `--rustdoc` mode (requires nightly) for maximum accuracy. Writes `.lunar/.interfaces-autogen.json`. |
 | `lunar diff` | Compare current routes with the last scan, showing added, removed, and modified interfaces (method changes, parameter name changes). |
 | `lunar sync --dry-run` | Preview changes that would be written to `.lunar/interfaces.yml`. |
 | `lunar sync --apply` | Backup existing `interfaces.yml`, scan `.lunar/suggestions/*.yaml` for pending AI or human-authored patches, **show a diff preview and prompt for confirmation**, perform field-level partial merge (⊕), write the updated `interfaces.yml`, and move processed suggestions to `.lunar/suggestions/*.yaml.applied`. |
