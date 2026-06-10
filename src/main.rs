@@ -5,7 +5,7 @@ use lunar::{
     ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
     generate_lunar_map, compare_routes, build_structural_index,
     run_adapter, DiffResult, doctor_check, cleanup_local, apply_patch_yaml,
-    merge_intent_into_actual, uploader,
+    merge_intent_into_actual, uploader, guide,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -18,7 +18,7 @@ use std::process::ExitCode;
 #[command(version = "0.1.0")]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -122,7 +122,12 @@ fn diff() -> Result<()> {
         for (ni, nr) in new_group.iter().enumerate() { if !new_matched[ni] { changes.push(format!("  + {} {} (added)", nr.method, nr.display_path())); } }
     }
     if changes.is_empty() { println!("No changes detected."); }
-    else { println!("Changes detected:"); for line in &changes { println!("{}", line); } }
+    else {
+        println!("Changes detected:"); for line in &changes { println!("{}", line); }
+        println!();
+        println!("Hint: Copy the above output to your AI assistant to generate a contract patch.");
+        println!("Then run `cat patch.yaml | lunar patch` to apply it.");
+    }
     Ok(())
 }
 
@@ -223,14 +228,12 @@ async fn map(config_path: &str, output: Option<&str>, upload: bool, bucket: Opti
         println!("✓ lunar-map.json written to {}", out_path);
         out_path.to_string()
     } else {
-        // Default output
         let default_path = "lunar-map.json";
         fs::write(default_path, &output_json)?;
         println!("{}", output_json);
         default_path.to_string()
     };
 
-    // Upload logic
     if upload {
         let bucket_name = bucket
             .map(|b| b.to_string())
@@ -284,8 +287,22 @@ fn patch_cmd(file: Option<String>) -> Result<()> {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // If no subcommand is provided, show contextual guide
+    if std::env::args().len() == 1 {
+        guide::show_guide();
+        return ExitCode::from(0);
+    }
+
     let cli = Cli::parse();
-    let result = match cli.command {
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            guide::show_guide();
+            return ExitCode::from(0);
+        }
+    };
+
+    let result = match command {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
@@ -302,6 +319,7 @@ async fn main() -> ExitCode {
             }
         }
     };
+
     if let Err(e) = result {
         eprintln!("Error: {}", e);
         ExitCode::from(1)
