@@ -1,7 +1,6 @@
 use std::path::Path;
 
 /// Detect the current project's language and framework.
-/// Returns a human-readable description.
 pub fn detect_language() -> String {
     if Path::new("Cargo.toml").exists() {
         "Rust (Cargo)".to_string()
@@ -37,9 +36,7 @@ pub fn has_scan_data() -> bool {
 /// Check if there are pending AI suggestions.
 pub fn pending_suggestions() -> Option<usize> {
     let dir = Path::new(".lunar/suggestions");
-    if !dir.is_dir() {
-        return None;
-    }
+    if !dir.is_dir() { return None; }
     let count = std::fs::read_dir(dir)
         .map(|entries| {
             entries
@@ -49,6 +46,15 @@ pub fn pending_suggestions() -> Option<usize> {
         })
         .unwrap_or(0);
     if count > 0 { Some(count) } else { None }
+}
+
+/// Check if nightly Rust toolchain is available (for rustdoc mode).
+pub fn detect_nightly_available() -> bool {
+    std::process::Command::new("cargo")
+        .args(["+nightly", "--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Print the contextual guide for the current project.
@@ -63,6 +69,7 @@ pub fn show_guide() {
     let initialized = is_initialized();
     let has_data = has_scan_data();
     let pending = pending_suggestions();
+    let nightly_available = detect_nightly_available();
 
     println!("🌙 LunarAST — Ecosystem Contract Governance");
     println!();
@@ -81,6 +88,12 @@ pub fn show_guide() {
         println!("    lunar init         Initialize contract workspace");
         if language.starts_with("Rust") {
             println!("    lunar scan         Scan for Axum routes");
+            if nightly_available {
+                println!();
+                println!("  Tip: For maximum accuracy, use rustdoc mode (requires nightly):");
+                println!("    cargo +nightly rustdoc -- -Z unstable-options --output-format json");
+                println!("    lunar scan --rustdoc");
+            }
         } else {
             println!("    lunar scan         Scan for routes (adapter required)");
             println!();
@@ -96,6 +109,12 @@ pub fn show_guide() {
         println!("  Run:");
         println!("    lunar scan         Extract route contracts");
         println!("    lunar doctor       Check ecosystem health");
+        if nightly_available {
+            println!();
+            println!("  Tip: For maximum accuracy with Rust projects:");
+            println!("    cargo +nightly rustdoc -- -Z unstable-options --output-format json");
+            println!("    lunar scan --rustdoc");
+        }
     } else {
         println!("  Contract data is ready.");
         println!();
