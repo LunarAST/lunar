@@ -57,6 +57,10 @@ lunar map -o lunar-map.json
 | `lunar doctor` | Run ecosystem health checks: adapter presence, scan data validity, cache integrity. Returns exit code 0 (healthy), 1 (environment error), or 2 (data error). |
 | `lunar cleanup --all` | Remove local scan cache files (`.lunar/.interfaces-autogen.json`). Requires interactive confirmation unless `--yes` is passed. |
 
+## Environment Variables
+
+- `LUNAR_PROJECTS_DIR` – Directory where `lunar map` searches for projects when no `--config` is given. Defaults to `/opt`.
+
 ## Adapters
 
 `lunar` discovers language-specific adapters via `PATH`. Install the adapters you need:
@@ -69,7 +73,7 @@ To add support for a new language, implement the [LDJSON adapter protocol](https
 
 ## Ecosystem Mirror
 
-To make your projects accessible via GitHub-style mirror URLs (e.g., `https://lunar.aifify.com/Jasonmilk/MyRepo/tree/main`), see [lunar-serve](https://github.com/LunarAST/lunar-serve) for setup and project registration.
+To make your projects accessible via GitHub-style mirror URLs (e.g., `https://name.your-domain.com/your-owner/your-repo/tree/main`), see [lunar-serve](https://github.com/LunarAST/lunar-serve) for setup and project registration.
 
 ## Documentation
 
