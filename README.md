@@ -53,7 +53,7 @@ lunar map -o lunar-map.json
 | `lunar sync --dry-run` | Preview changes that would be written to `.lunar/interfaces.yml`. |
 | `lunar sync --apply` | Backup existing `interfaces.yml`, scan `.lunar/suggestions/*.yaml` for pending AI or human-authored patches, **show a diff preview and prompt for confirmation**, perform field-level partial merge (⊕), write the updated `interfaces.yml`, and move processed suggestions to `.lunar/suggestions/*.yaml.applied`. |
 | `lunar patch` | Apply a YAML contract patch from file or stdin. Supports file mode (`lunar patch path/to/file.yaml`) and pipe mode (`cat patch.yaml \| lunar patch`). Validates `targetProject` against `repos.json` if present. Prompts for confirmation before merging. |
-| `lunar map` | Aggregate `actual.json` files from multiple projects into a global `lunar-map.json` (with per-port alignment data). |
+| `lunar map` | Generate ecosystem topology. With `--config`, use a config file. Without config, auto-detects all projects in `LUNAR_PROJECTS_DIR` (default `/opt/`). Supports `--upload` and `--output`. |
 | `lunar doctor` | Run ecosystem health checks: adapter presence, scan data validity, cache integrity. Returns exit code 0 (healthy), 1 (environment error), or 2 (data error). |
 | `lunar cleanup --all` | Remove local scan cache files (`.lunar/.interfaces-autogen.json`). Requires interactive confirmation unless `--yes` is passed. |
 

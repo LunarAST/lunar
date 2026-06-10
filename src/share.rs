@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::process::Command as StdCommand;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
@@ -51,12 +52,12 @@ fn find_lunar_serve() -> Result<PathBuf> {
     anyhow::bail!("lunar-serve not found. Build it first: cd lunar-serve && cargo build")
 }
 
-/// Detect installed tunneling tools
+/// Detect installed tunneling tools (synchronous, using std::process::Command)
 fn detect_tunnel_tool() -> Option<&'static str> {
     let tools = vec![("cloudflared", "--version"), ("tailscale", "version"), ("ngrok", "version")];
     for (name, _) in &tools {
         let bin = if cfg!(windows) { format!("{}.exe", name) } else { name.to_string() };
-        if Command::new(&bin).output().is_ok() {
+        if StdCommand::new(&bin).output().is_ok() {
             return Some(name);
         }
     }

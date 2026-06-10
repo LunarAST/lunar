@@ -527,6 +527,7 @@ fn parse_path_to_segments(path: &str) -> Vec<RouteSegment> {
 
 pub mod keygen;
 pub mod guide;
+pub mod share;
 pub mod uploader;
 // ---------- Doctor ----------
 

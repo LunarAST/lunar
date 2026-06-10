@@ -32,8 +32,9 @@ enum Commands {
         dry_run: bool,
     },
     Map {
-        #[arg(default_value = "lunar-map-config.json")]
-        config: String,
+        /// Path to config file (optional; auto-detects projects if omitted)
+        #[arg(short = 'c', long)]
+        config: Option<String>,
         #[arg(short = 'o', long)]
         output: Option<String>,
         #[arg(long)]
@@ -57,6 +58,7 @@ enum Commands {
         #[arg(default_value_t = current_dir_project_name())]
         project: String,
     },
+    Share,
 }
 
 fn current_dir_project_name() -> String {
@@ -200,9 +202,47 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-async fn map(config_path: &str, output: Option<&str>, upload: bool, bucket: Option<&str>, yes: bool) -> Result<()> {
-    let config_content = fs::read_to_string(config_path)?;
-    let config: LunarMapConfig = serde_json::from_str(&config_content)?;
+/// Auto-detect projects in a given directory by finding .lunar/.interfaces-autogen.json files.
+fn auto_detect_projects(base_dir: &Path) -> Result<HashMap<String, String>> {
+    let mut projects = HashMap::new();
+    if !base_dir.is_dir() {
+        return Ok(projects);
+    }
+    for entry in fs::read_dir(base_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            let autogen = path.join(".lunar/.interfaces-autogen.json");
+            if autogen.exists() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    projects.insert(name.to_string(), autogen.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    Ok(projects)
+}
+
+async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, bucket: Option<&str>, yes: bool) -> Result<()> {
+    let config: LunarMapConfig = if let Some(cfg_path) = config_path {
+        let config_content = fs::read_to_string(cfg_path)?;
+        serde_json::from_str(&config_content)?
+    } else {
+        // Auto-detect projects
+        let scan_dir = std::env::var("LUNAR_PROJECTS_DIR").unwrap_or_else(|_| "/opt".to_string());
+        let base = Path::new(&scan_dir);
+        println!("No config file specified. Auto-detecting projects in {}...", scan_dir);
+        let detected = auto_detect_projects(base)?;
+        if detected.is_empty() {
+            anyhow::bail!("No projects found in {}. Run 'lunar scan' in each project first, or specify a config file with --config.", scan_dir);
+        }
+        println!("Found {} project(s):", detected.len());
+        for (name, path) in &detected {
+            println!("  - {} ({})", name, path);
+        }
+        LunarMapConfig { projects: detected }
+    };
+
     let mut project_actuals = HashMap::new();
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
@@ -314,7 +354,6 @@ fn interactive_mode() -> ExitCode {
             let input = input.trim().to_lowercase();
             match input.as_str() {
                 "1" => {
-                    // run init
                     println!("\nRunning lunar init...\n");
                     if let Err(e) = lunar_init() {
                         eprintln!("Error: {}", e);
@@ -371,7 +410,7 @@ fn interactive_mode() -> ExitCode {
             "lunar sync --apply" => sync(true, false),
             "lunar map" => {
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(map("lunar-map-config.json", None, false, None, false))
+                rt.block_on(map(None, None, false, None, false))
             }
             "lunar doctor" => { doctor_check(); Ok(()) }
             _ => Ok(()),
@@ -418,13 +457,19 @@ async fn main() -> ExitCode {
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
         Commands::Map { config, output, upload, bucket, yes } => {
-            map(&config, output.as_deref(), upload, bucket.as_deref(), yes).await
+            map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }
         Commands::Doctor => { return doctor_check(); }
         Commands::Cleanup { all: _, yes } => cleanup_local(yes).map(|_| ()),
         Commands::Patch { file } => patch_cmd(file),
         Commands::Keygen { project } => {
             match lunar::keygen::generate_keypair(&project) {
+                Ok(()) => Ok(()),
+                Err(e) => { eprintln!("Error: {}", e); Ok(()) }
+            }
+        }
+        Commands::Share => {
+            match lunar::share::run_share().await {
                 Ok(()) => Ok(()),
                 Err(e) => { eprintln!("Error: {}", e); Ok(()) }
             }
