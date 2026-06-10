@@ -263,6 +263,94 @@ fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignm
     unused
 }
 
+// ---------- Intent overlay merge ----------
+
+/// Merge intent overlay (interfaces.yml) into physical facts (ActualJson).
+/// Intent declarations take precedence over physical facts for matching paths.
+/// Physical facts not mentioned in intent are preserved as-is.
+/// Intent declarations not present in physical facts are added as manual entries.
+pub fn merge_intent_into_actual(actual: &mut ActualJson, intent: &InterfacesYml) {
+    // Merge exposed
+    if let Some(ref intent_exposed) = intent.exposed {
+        for intent_item in intent_exposed {
+            if let Some(existing) = actual.exposed.iter_mut().find(
+                |e| e.to_path() == intent_item.path && e.method == intent_item.method
+            ) {
+                // Field-level override: preserve source metadata, override reason/target
+                if intent_item.target_project.is_some() {
+                    existing.target_project = intent_item.target_project.clone();
+                }
+            } else {
+                // Intent-only declaration: add as manual entry
+                let segments = parse_path_to_segments(&intent_item.path);
+                actual.exposed.push(RouteEntry {
+                    method: intent_item.method.clone(),
+                    segments,
+                    source_file: "manual".to_string(),
+                    line_number: 0,
+                    extraction_method: "manual".to_string(),
+                    target_project: None,
+                });
+            }
+        }
+    }
+    // Merge consumed
+    if let Some(ref intent_consumed) = intent.consumed {
+        for intent_item in intent_consumed {
+            if let Some(existing) = actual.consumed.iter_mut().find(
+                |e| e.to_path() == intent_item.path && e.method == intent_item.method
+            ) {
+                if intent_item.target_project.is_some() {
+                    existing.target_project = intent_item.target_project.clone();
+                }
+            } else {
+                let segments = parse_path_to_segments(&intent_item.path);
+                actual.consumed.push(RouteEntry {
+                    method: intent_item.method.clone(),
+                    segments,
+                    source_file: "manual".to_string(),
+                    line_number: 0,
+                    extraction_method: "manual".to_string(),
+                    target_project: intent_item.target_project.clone(),
+                });
+            }
+        }
+    }
+}
+
+/// Quick path-to-segments parser for manual entries.
+fn parse_path_to_segments(path: &str) -> Vec<RouteSegment> {
+    let mut segments = Vec::new();
+    for part in path.trim_matches('/').split('/') {
+        if part.is_empty() { continue; }
+        if part.starts_with(':') {
+            segments.push(RouteSegment {
+                segment_type: "parameter".to_string(),
+                value: None,
+                name: Some(part[1..].to_string()),
+                raw_constraint: None,
+            });
+        } else if part.starts_with('{') && part.ends_with('}') {
+            let inner = &part[1..part.len()-1];
+            let name = inner.split(':').next().unwrap_or(inner).to_string();
+            segments.push(RouteSegment {
+                segment_type: "parameter".to_string(),
+                value: None,
+                name: Some(name),
+                raw_constraint: None,
+            });
+        } else {
+            segments.push(RouteSegment {
+                segment_type: "literal".to_string(),
+                value: Some(part.to_string()),
+                name: None,
+                raw_constraint: None,
+            });
+        }
+    }
+    segments
+}
+
 pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_statuses: &HashMap<String, String>) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();

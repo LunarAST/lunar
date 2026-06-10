@@ -5,6 +5,7 @@ use lunar::{
     ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
     generate_lunar_map, compare_routes, build_structural_index,
     run_adapter, DiffResult, doctor_check, cleanup_local, apply_patch_yaml,
+    merge_intent_into_actual,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -43,9 +44,8 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Apply a YAML contract patch from file or stdin
     Patch {
-        /// Path to a YAML patch file (if not provided, reads from stdin)
+        #[arg(value_name = "FILE")]
         file: Option<String>,
     },
 }
@@ -191,13 +191,26 @@ fn map(config_path: &str, output: Option<&str>) -> Result<()> {
     let mut project_actuals = HashMap::new();
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
-        let actual: ActualJson = serde_json::from_str(&actual_content)?;
+        let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
+        // Try to load and merge intent overlay
+        let intent_path = Path::new(path_str).parent().unwrap().join("interfaces.yml");
+        if intent_path.exists() {
+            if let Ok(intent_content) = fs::read_to_string(&intent_path) {
+                if let Ok(intent) = serde_yaml::from_str::<InterfacesYml>(&intent_content) {
+                    merge_intent_into_actual(&mut actual, &intent);
+                }
+            }
+        }
         project_actuals.insert(name.clone(), actual);
     }
     let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new());
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
-    if let Some(out_path) = output { fs::write(out_path, output_json)?; println!("✓ lunar-map.json written to {}", out_path); }
-    else { println!("{}", output_json); }
+    if let Some(out_path) = output {
+        fs::write(out_path, output_json)?;
+        println!("✓ lunar-map.json written to {}", out_path);
+    } else {
+        println!("{}", output_json);
+    }
     Ok(())
 }
 
