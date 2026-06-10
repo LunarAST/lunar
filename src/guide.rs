@@ -116,3 +116,37 @@ pub fn show_guide() {
     println!();
     println!("  For all commands:  lunar help");
 }
+
+pub struct ProjectState {
+    pub project_name: String,
+    pub language: String,
+    pub branch: Option<String>,
+    pub initialized: bool,
+    pub has_data: bool,
+    pub pending_count: usize,
+}
+
+impl ProjectState {
+    pub fn status_summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.initialized { parts.push("Initialized".to_string()); }
+        if self.has_data { parts.push("scan data ready".to_string()); }
+        if self.pending_count > 0 { parts.push(format!("{} pending suggestion(s)", self.pending_count)); }
+        if parts.is_empty() { "Not initialized".to_string() } else { parts.join(", ") }
+    }
+}
+
+pub fn analyze() -> ProjectState {
+    let project_name = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+    ProjectState {
+        project_name,
+        language: detect_language(),
+        branch: detect_branch(),
+        initialized: is_initialized(),
+        has_data: has_scan_data(),
+        pending_count: pending_suggestions().unwrap_or(0),
+    }
+}

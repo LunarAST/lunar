@@ -36,13 +36,10 @@ enum Commands {
         config: String,
         #[arg(short = 'o', long)]
         output: Option<String>,
-        /// Upload to S3-compatible storage after generation
         #[arg(long)]
         upload: bool,
-        /// Target bucket name (required if --upload)
         #[arg(long, requires = "upload")]
         bucket: Option<String>,
-        /// Skip confirmation prompt
         #[arg(long)]
         yes: bool,
     },
@@ -285,21 +282,135 @@ fn patch_cmd(file: Option<String>) -> Result<()> {
     apply_patch_yaml(&yaml_str)
 }
 
+// ---------- Interactive mode ----------
+
+fn interactive_mode() -> ExitCode {
+    loop {
+        let state = guide::analyze();
+        println!();
+        println!("🌙 LunarAST — Ecosystem Contract Governance");
+        println!();
+        println!("  Project: {}", state.project_name);
+        println!("  Detected: {} {}", state.language, if let Some(ref b) = state.branch {
+            format!("| Git branch: {}", b)
+        } else {
+            String::new()
+        });
+        println!("  Status: {}", state.status_summary());
+        println!();
+
+        let mut options: Vec<(&str, &str)> = Vec::new();
+        let mut index = 1usize;
+
+        if !state.initialized {
+            println!("  This project hasn't been initialized yet.");
+            println!();
+            println!("  [1] Initialize project (lunar init)");
+            println!("  [q] Quit");
+            print!("\n  Your choice: ");
+            io::stdout().flush().ok();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).ok();
+            let input = input.trim().to_lowercase();
+            match input.as_str() {
+                "1" => {
+                    // run init
+                    println!("\nRunning lunar init...\n");
+                    if let Err(e) = lunar_init() {
+                        eprintln!("Error: {}", e);
+                    }
+                }
+                "q" => return ExitCode::from(0),
+                _ => println!("Invalid choice."),
+            }
+            continue;
+        }
+
+        if !state.has_data {
+            options.push(("Scan project", "lunar scan"));
+            options.push(("Health check", "lunar doctor"));
+        } else {
+            options.push(("Scan project (re-extract)", "lunar scan"));
+            options.push(("Show changes", "lunar diff"));
+            options.push(("Sync contracts", "lunar sync --apply"));
+            options.push(("Generate topology", "lunar map"));
+            options.push(("Health check", "lunar doctor"));
+        }
+
+        for (desc, _cmd) in &options {
+            println!("  [{}] {}", index, desc);
+            index += 1;
+        }
+        println!("  [q] Quit");
+
+        print!("\n  Your choice: ");
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        let input = input.trim().to_lowercase();
+
+        if input == "q" {
+            return ExitCode::from(0);
+        }
+
+        let choice: usize = match input.parse() {
+            Ok(n) if n >= 1 && n <= options.len() => n,
+            _ => {
+                println!("Invalid choice.");
+                continue;
+            }
+        };
+
+        let (_desc, cmd_str) = options[choice - 1];
+
+        println!("\nRunning {}...\n", cmd_str);
+
+        let result = match cmd_str {
+            "lunar scan" => scan(),
+            "lunar diff" => diff(),
+            "lunar sync --apply" => sync(true, false),
+            "lunar map" => {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(map("lunar-map-config.json", None, false, None, false))
+            }
+            "lunar doctor" => { doctor_check(); Ok(()) }
+            _ => Ok(()),
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {}", e);
+        }
+    }
+}
+
+fn lunar_init() -> Result<()> {
+    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
+    if interfaces_path.exists() {
+        println!("interfaces.yml already exists.");
+        return Ok(());
+    }
+    fs::create_dir_all(".lunar")?;
+    let initial_yaml = r#"# LunarAST Project Interface Contract
+# This file is owned and maintained by humans.
+project: ""
+type: mixed
+environment: production
+"#;
+    fs::write(&interfaces_path, initial_yaml)?;
+    println!("✓ Created .lunar/interfaces.yml");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
-    // If no subcommand is provided, show contextual guide
     if std::env::args().len() == 1 {
-        guide::show_guide();
-        return ExitCode::from(0);
+        return interactive_mode();
     }
 
     let cli = Cli::parse();
     let command = match cli.command {
         Some(cmd) => cmd,
-        None => {
-            guide::show_guide();
-            return ExitCode::from(0);
-        }
+        None => return interactive_mode(),
     };
 
     let result = match command {
