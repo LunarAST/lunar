@@ -263,94 +263,6 @@ fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignm
     unused
 }
 
-// ---------- Intent overlay merge ----------
-
-/// Merge intent overlay (interfaces.yml) into physical facts (ActualJson).
-/// Intent declarations take precedence over physical facts for matching paths.
-/// Physical facts not mentioned in intent are preserved as-is.
-/// Intent declarations not present in physical facts are added as manual entries.
-pub fn merge_intent_into_actual(actual: &mut ActualJson, intent: &InterfacesYml) {
-    // Merge exposed
-    if let Some(ref intent_exposed) = intent.exposed {
-        for intent_item in intent_exposed {
-            if let Some(existing) = actual.exposed.iter_mut().find(
-                |e| e.to_path() == intent_item.path && e.method == intent_item.method
-            ) {
-                // Field-level override: preserve source metadata, override reason/target
-                if intent_item.target_project.is_some() {
-                    existing.target_project = intent_item.target_project.clone();
-                }
-            } else {
-                // Intent-only declaration: add as manual entry
-                let segments = parse_path_to_segments(&intent_item.path);
-                actual.exposed.push(RouteEntry {
-                    method: intent_item.method.clone(),
-                    segments,
-                    source_file: "manual".to_string(),
-                    line_number: 0,
-                    extraction_method: "manual".to_string(),
-                    target_project: None,
-                });
-            }
-        }
-    }
-    // Merge consumed
-    if let Some(ref intent_consumed) = intent.consumed {
-        for intent_item in intent_consumed {
-            if let Some(existing) = actual.consumed.iter_mut().find(
-                |e| e.to_path() == intent_item.path && e.method == intent_item.method
-            ) {
-                if intent_item.target_project.is_some() {
-                    existing.target_project = intent_item.target_project.clone();
-                }
-            } else {
-                let segments = parse_path_to_segments(&intent_item.path);
-                actual.consumed.push(RouteEntry {
-                    method: intent_item.method.clone(),
-                    segments,
-                    source_file: "manual".to_string(),
-                    line_number: 0,
-                    extraction_method: "manual".to_string(),
-                    target_project: intent_item.target_project.clone(),
-                });
-            }
-        }
-    }
-}
-
-/// Quick path-to-segments parser for manual entries.
-fn parse_path_to_segments(path: &str) -> Vec<RouteSegment> {
-    let mut segments = Vec::new();
-    for part in path.trim_matches('/').split('/') {
-        if part.is_empty() { continue; }
-        if part.starts_with(':') {
-            segments.push(RouteSegment {
-                segment_type: "parameter".to_string(),
-                value: None,
-                name: Some(part[1..].to_string()),
-                raw_constraint: None,
-            });
-        } else if part.starts_with('{') && part.ends_with('}') {
-            let inner = &part[1..part.len()-1];
-            let name = inner.split(':').next().unwrap_or(inner).to_string();
-            segments.push(RouteSegment {
-                segment_type: "parameter".to_string(),
-                value: None,
-                name: Some(name),
-                raw_constraint: None,
-            });
-        } else {
-            segments.push(RouteSegment {
-                segment_type: "literal".to_string(),
-                value: Some(part.to_string()),
-                name: None,
-                raw_constraint: None,
-            });
-        }
-    }
-    segments
-}
-
 pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_statuses: &HashMap<String, String>) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();
@@ -452,6 +364,26 @@ pub fn parse_routes(ldjson: &str) -> anyhow::Result<Vec<RouteEntry>> {
 
 // ---------- Patch application ----------
 
+/// Load known project names from a repos.json-like file (just the array of project names).
+fn load_known_projects() -> Vec<String> {
+    let candidates: Vec<std::path::PathBuf> = vec![
+        Path::new("repos.json").to_path_buf(),
+        Path::new(".lunar").join("repos.json"),
+    ];
+    for path in candidates {
+        if path.exists() {
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(arr) = json.get("projects").and_then(|p| p.as_array()) {
+                        return arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    }
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// Apply a YAML patch string to the current project interfaces.
 /// Backs up the old interfaces.yml and prompts for confirmation.
 pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
@@ -460,6 +392,22 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
 
     let patch: InterfacesYml = serde_yaml::from_str(yaml_str)
         .map_err(|e| anyhow::anyhow!("Invalid YAML patch: {}", e))?;
+
+    // Load known projects for name validation
+    let known_projects = load_known_projects();
+
+    // Validate targetProject names against known projects
+    if let Some(ref consumed) = patch.consumed {
+        for item in consumed {
+            if let Some(ref target) = item.target_project {
+                if !known_projects.is_empty() && !known_projects.iter().any(|p| p == target) {
+                    eprintln!("⚠️  Warning: targetProject '{}' is not in the known project list.", target);
+                    eprintln!("   Known projects: {:?}", known_projects);
+                    eprintln!("   If this is a new project, add it to repos.json first.");
+                }
+            }
+        }
+    }
 
     let mut interfaces: InterfacesYml = if interfaces_path.exists() {
         serde_yaml::from_str(&fs::read_to_string(&interfaces_path)?)?
@@ -486,14 +434,28 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
         }
     }
 
+    // If the patch sets project type, apply it
+    if patch.project_type.is_some() {
+        interfaces.project_type = patch.project_type.clone();
+    }
+    if patch.project.is_some() {
+        interfaces.project = patch.project.clone();
+    }
+
     println!("Changes to be applied:");
     if let Some(ref exposed) = interfaces.exposed { for item in exposed { println!("  E: {} {}", item.method, item.path); } }
     if let Some(ref consumed) = interfaces.consumed { for item in consumed { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
-
-    print!("Proceed with merge? [y/N] ");
+    if let Some(ref pt) = interfaces.project_type { println!("  Project type: {}", pt); }    print!("Proceed with merge? [y/N] ");
     io::stdout().flush()?;
     let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
+    // Read from /dev/tty to avoid conflict with piped stdin
+    if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+        use std::io::BufRead;
+        let mut reader = std::io::BufReader::new(&mut tty);
+        reader.read_line(&mut input)?;
+    } else {
+        io::stdin().read_line(&mut input)?;
+    }
     if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
         println!("Merge cancelled.");
         return Ok(());
@@ -508,6 +470,55 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
     fs::write(&interfaces_path, serde_yaml::to_string(&interfaces)?)?;
     println!("✓ interfaces.yml updated");
     Ok(())
+}
+
+// ---------- Intent overlay merge ----------
+
+/// Merge intent overlay (interfaces.yml) into physical facts (ActualJson).
+pub fn merge_intent_into_actual(actual: &mut ActualJson, intent: &InterfacesYml) {
+    if let Some(ref intent_exposed) = intent.exposed {
+        for intent_item in intent_exposed {
+            if let Some(existing) = actual.exposed.iter_mut().find(|e| e.to_path() == intent_item.path && e.method == intent_item.method) {
+                if intent_item.target_project.is_some() { existing.target_project = intent_item.target_project.clone(); }
+            } else {
+                let segments = parse_path_to_segments(&intent_item.path);
+                actual.exposed.push(RouteEntry {
+                    method: intent_item.method.clone(), segments,
+                    source_file: "manual".to_string(), line_number: 0, extraction_method: "manual".to_string(), target_project: None,
+                });
+            }
+        }
+    }
+    if let Some(ref intent_consumed) = intent.consumed {
+        for intent_item in intent_consumed {
+            if let Some(existing) = actual.consumed.iter_mut().find(|e| e.to_path() == intent_item.path && e.method == intent_item.method) {
+                if intent_item.target_project.is_some() { existing.target_project = intent_item.target_project.clone(); }
+            } else {
+                let segments = parse_path_to_segments(&intent_item.path);
+                actual.consumed.push(RouteEntry {
+                    method: intent_item.method.clone(), segments,
+                    source_file: "manual".to_string(), line_number: 0, extraction_method: "manual".to_string(), target_project: intent_item.target_project.clone(),
+                });
+            }
+        }
+    }
+}
+
+fn parse_path_to_segments(path: &str) -> Vec<RouteSegment> {
+    let mut segments = Vec::new();
+    for part in path.trim_matches('/').split('/') {
+        if part.is_empty() { continue; }
+        if part.starts_with(':') {
+            segments.push(RouteSegment { segment_type: "parameter".to_string(), value: None, name: Some(part[1..].to_string()), raw_constraint: None });
+        } else if part.starts_with('{') && part.ends_with('}') {
+            let inner = &part[1..part.len()-1];
+            let name = inner.split(':').next().unwrap_or(inner).to_string();
+            segments.push(RouteSegment { segment_type: "parameter".to_string(), value: None, name: Some(name), raw_constraint: None });
+        } else {
+            segments.push(RouteSegment { segment_type: "literal".to_string(), value: Some(part.to_string()), name: None, raw_constraint: None });
+        }
+    }
+    segments
 }
 
 // ---------- Doctor ----------
@@ -569,18 +580,23 @@ pub fn doctor_check() -> std::process::ExitCode {
 pub fn cleanup_local(force: bool) -> anyhow::Result<Vec<String>> {
     let lunar_dir = Path::new(".lunar");
     if !lunar_dir.exists() { println!("No .lunar/ directory found. Nothing to clean up."); return Ok(vec![]); }
-    let candidates = vec![lunar_dir.join("route-ast-actual.json"), lunar_dir.join(".interfaces-autogen.json")];
+    let candidates: Vec<std::path::PathBuf> = vec![lunar_dir.join("route-ast-actual.json"), lunar_dir.join(".interfaces-autogen.json")];
     let to_remove: Vec<_> = candidates.into_iter().filter(|p| p.exists()).collect();
     if to_remove.is_empty() { println!("No cache files found. Nothing to clean up."); return Ok(vec![]); }
     println!("The following files will be removed:");
     for f in &to_remove { println!("  - {}", f.display()); }
     println!();
     if !force {
-        println!("This action cannot be undone.");
-        print!("Are you sure you want to continue? [y/N] ");
-        io::stdout().flush()?;
-        let mut input = String::new();
+        println!("This action cannot be undone.");    print!("Are you sure you want to continue? [y/N] ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+        use std::io::BufRead;
+        let mut reader = std::io::BufReader::new(&mut tty);
+        reader.read_line(&mut input)?;
+    } else {
         io::stdin().read_line(&mut input)?;
+    }
         if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" { println!("Cleanup cancelled."); return Ok(vec![]); }
     }
     let mut removed = Vec::new();
