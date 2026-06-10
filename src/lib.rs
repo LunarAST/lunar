@@ -525,6 +525,8 @@ fn parse_path_to_segments(path: &str) -> Vec<RouteSegment> {
     segments
 }
 
+pub mod keygen;
+pub mod uploader;
 // ---------- Doctor ----------
 
 pub fn doctor_check() -> std::process::ExitCode {

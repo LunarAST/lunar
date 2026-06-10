@@ -5,11 +5,11 @@ use lunar::{
     ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
     generate_lunar_map, compare_routes, build_structural_index,
     run_adapter, DiffResult, doctor_check, cleanup_local, apply_patch_yaml,
-    merge_intent_into_actual,
+    merge_intent_into_actual, uploader,
 };
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -36,6 +36,15 @@ enum Commands {
         config: String,
         #[arg(short = 'o', long)]
         output: Option<String>,
+        /// Upload to S3-compatible storage after generation
+        #[arg(long)]
+        upload: bool,
+        /// Target bucket name (required if --upload)
+        #[arg(long, requires = "upload")]
+        bucket: Option<String>,
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
     Doctor,
     Cleanup {
@@ -45,9 +54,19 @@ enum Commands {
         yes: bool,
     },
     Patch {
-        #[arg(value_name = "FILE")]
         file: Option<String>,
     },
+    Keygen {
+        #[arg(default_value_t = current_dir_project_name())]
+        project: String,
+    },
+}
+
+fn current_dir_project_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn scan() -> Result<()> {
@@ -113,22 +132,18 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     let suggestions_dir = Path::new(".lunar").join("suggestions");
     let actual_path = Path::new(".lunar").join(".interfaces-autogen.json");
     if !actual_path.exists() { println!("No scan data found. Run 'lunar scan' first."); return Ok(()); }
-
     let actual: ActualJson = serde_json::from_str(&fs::read_to_string(&actual_path)?)?;
     let new_exposed: Vec<InterfaceItem> = actual.exposed.iter().map(|r| InterfaceItem {
         path: r.to_path(), method: r.method.clone(), reason: None, target_project: None,
     }).collect();
-
     let mut interfaces: InterfacesYml = if interfaces_path.exists() {
         serde_yaml::from_str(&fs::read_to_string(&interfaces_path)?)?
     } else {
         InterfacesYml { project: None, project_type: None, environment: None, exposed: Some(Vec::new()), consumed: None }
     };
-
     if let Some(ref mut existing) = interfaces.exposed {
         for item in &new_exposed { if !existing.iter().any(|e| e.path == item.path && e.method == item.method) { existing.push(item.clone()); } }
     } else { interfaces.exposed = Some(new_exposed.clone()); }
-
     if suggestions_dir.is_dir() {
         let mut entries: Vec<_> = fs::read_dir(&suggestions_dir)?.filter_map(|e| e.ok()).filter(|e| e.path().extension().map_or(false, |ext| ext == "yaml" || ext == "yml")).collect();
         entries.sort_by_key(|e| e.file_name());
@@ -164,7 +179,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
             println!("Suggestions processed.");
         }
     }
-
     if dry_run {
         println!("--- Dry run preview ---");
         if let Some(ref existing) = interfaces.exposed { for item in existing { println!("  E: {} {}", item.method, item.path); } }
@@ -173,7 +187,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
         return Ok(());
     }
     if !apply { println!("No action taken."); return Ok(()); }
-
     if interfaces_path.exists() {
         fs::create_dir_all(&backup_dir)?;
         let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
@@ -185,14 +198,13 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-fn map(config_path: &str, output: Option<&str>) -> Result<()> {
+async fn map(config_path: &str, output: Option<&str>, upload: bool, bucket: Option<&str>, yes: bool) -> Result<()> {
     let config_content = fs::read_to_string(config_path)?;
     let config: LunarMapConfig = serde_json::from_str(&config_content)?;
     let mut project_actuals = HashMap::new();
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
         let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
-        // Try to load and merge intent overlay
         let intent_path = Path::new(path_str).parent().unwrap().join("interfaces.yml");
         if intent_path.exists() {
             if let Ok(intent_content) = fs::read_to_string(&intent_path) {
@@ -205,12 +217,51 @@ fn map(config_path: &str, output: Option<&str>) -> Result<()> {
     }
     let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new());
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
-    if let Some(out_path) = output {
-        fs::write(out_path, output_json)?;
+
+    let output_path = if let Some(out_path) = output {
+        fs::write(out_path, &output_json)?;
         println!("✓ lunar-map.json written to {}", out_path);
+        out_path.to_string()
     } else {
+        // Default output
+        let default_path = "lunar-map.json";
+        fs::write(default_path, &output_json)?;
         println!("{}", output_json);
+        default_path.to_string()
+    };
+
+    // Upload logic
+    if upload {
+        let bucket_name = bucket
+            .map(|b| b.to_string())
+            .or_else(|| std::env::var("LUNAR_S3_BUCKET").ok())
+            .ok_or_else(|| anyhow::anyhow!("No bucket specified. Use --bucket or set LUNAR_S3_BUCKET env."))?;
+
+        let metadata = fs::metadata(&output_path)?;
+        let file_size_kb = metadata.len() as f64 / 1024.0;
+        println!("  File: {} ({:.1} KB)", output_path, file_size_kb);
+        println!("  Target: {}/lunar-map.json", bucket_name);
+
+        if !yes {
+            print!("Proceed with upload? [y/N] ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+                use std::io::BufRead;
+                let mut reader = std::io::BufReader::new(&mut tty);
+                reader.read_line(&mut input)?;
+            } else {
+                io::stdin().read_line(&mut input)?;
+            }
+            if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
+                println!("Upload cancelled.");
+                return Ok(());
+            }
+        }
+
+        uploader::upload_to_s3(Path::new(&output_path), "lunar-map.json", &bucket_name).await?;
     }
+
     Ok(())
 }
 
@@ -231,16 +282,25 @@ fn patch_cmd(file: Option<String>) -> Result<()> {
     apply_patch_yaml(&yaml_str)
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
-        Commands::Map { config, output } => map(&config, output.as_deref()),
+        Commands::Map { config, output, upload, bucket, yes } => {
+            map(&config, output.as_deref(), upload, bucket.as_deref(), yes).await
+        }
         Commands::Doctor => { return doctor_check(); }
         Commands::Cleanup { all: _, yes } => cleanup_local(yes).map(|_| ()),
         Commands::Patch { file } => patch_cmd(file),
+        Commands::Keygen { project } => {
+            match lunar::keygen::generate_keypair(&project) {
+                Ok(()) => Ok(()),
+                Err(e) => { eprintln!("Error: {}", e); Ok(()) }
+            }
+        }
     };
     if let Err(e) = result {
         eprintln!("Error: {}", e);
