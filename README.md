@@ -67,6 +67,10 @@ lunar map -o lunar-map.json
 
 To add support for a new language, implement the [LDJSON adapter protocol](https://github.com/LunarAST/RouteAST#31-line-delimited-json-ldjson-output-stream-format).
 
+## Ecosystem Mirror
+
+To make your projects accessible via GitHub-style mirror URLs (e.g., `https://lunar.aifify.com/Jasonmilk/MyRepo/tree/main`), see [lunar-serve](https://github.com/LunarAST/lunar-serve) for setup and project registration.
+
 ## Documentation
 
 - [LunarAST Ecosystem Mother Specification](https://github.com/LunarAST/.github/blob/main/docs/ecosystem-whitepaper-v1.0.md)
