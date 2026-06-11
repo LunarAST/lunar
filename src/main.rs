@@ -32,7 +32,6 @@ enum Commands {
         dry_run: bool,
     },
     Map {
-        /// Path to config file (optional; auto-detects projects if omitted)
         #[arg(short = 'c', long)]
         config: Option<String>,
         #[arg(short = 'o', long)]
@@ -202,7 +201,6 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Auto-detect projects in a given directory by finding .lunar/.interfaces-autogen.json files.
 fn auto_detect_projects(base_dir: &Path) -> Result<HashMap<String, String>> {
     let mut projects = HashMap::new();
     if !base_dir.is_dir() {
@@ -228,7 +226,6 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
         let config_content = fs::read_to_string(cfg_path)?;
         serde_json::from_str(&config_content)?
     } else {
-        // Auto-detect projects
         let scan_dir = std::env::var("LUNAR_PROJECTS_DIR").unwrap_or_else(|_| "/opt".to_string());
         let base = Path::new(&scan_dir);
         println!("No config file specified. Auto-detecting projects in {}...", scan_dir);
@@ -244,6 +241,7 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
     };
 
     let mut project_actuals = HashMap::new();
+    let mut project_paths = HashMap::new(); // [ADDED] Track absolute workspace path mappings dynamically
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
         let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
@@ -256,8 +254,17 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
             }
         }
         project_actuals.insert(name.clone(), actual);
+
+        // [ADDED] Derive workspace directory by finding the grand-parent of .interfaces-autogen.json
+        let workspace_path = Path::new(path_str)
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        project_paths.insert(name.clone(), workspace_path);
     }
-    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new());
+    // [MODIFIED] Pass dynamically discovered path map into topology generator
+    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new(), &project_paths);
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
 
     let output_path = if let Some(out_path) = output {
@@ -409,7 +416,6 @@ async fn interactive_mode() -> ExitCode {
             "lunar diff" => diff(),
             "lunar sync --apply" => sync(true, false),
             "lunar map" => {
-                
                 map(None, None, false, None, false).await
             }
             "lunar doctor" => { doctor_check(); Ok(()) }

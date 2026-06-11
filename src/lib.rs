@@ -159,6 +159,8 @@ pub struct ProjectInfo {
     #[serde(rename = "scanStatus")]
     pub scan_status: String,
     pub interfaces: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>, // [ADDED] Workspace path metadata for zero-friction AI Raw consumption
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -257,7 +259,6 @@ fn aggregate_status(statuses: &[String]) -> String {
 fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignments: &[AlignmentEntry]) -> Vec<AnomalyEndpoint> {
     let mut unused = Vec::new();
     for (name, actual) in project_actuals {
-        // Skip library projects — they don't have "exposed" in the network sense
         if actual.project_type.as_deref() == Some("library") {
             continue;
         }
@@ -269,7 +270,11 @@ fn detect_unused_endpoints(project_actuals: &HashMap<String, ActualJson>, alignm
     unused
 }
 
-pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_statuses: &HashMap<String, String>) -> LunarMap {
+pub fn generate_lunar_map(
+    project_actuals: &HashMap<String, ActualJson>,
+    scan_statuses: &HashMap<String, String>,
+    project_paths: &HashMap<String, String>, // [MODIFIED] Direct ingestion of project workspace paths
+) -> LunarMap {
     let mut projects = Vec::new();
     let mut alignments = Vec::new();
     for (name, actual) in project_actuals {
@@ -279,7 +284,8 @@ pub fn generate_lunar_map(project_actuals: &HashMap<String, ActualJson>, scan_st
             "exposed": actual.exposed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method})).collect::<Vec<_>>(),
             "consumed": actual.consumed.iter().map(|r| serde_json::json!({"path": r.to_path(), "method": r.method, "targetProject": r.target_project.as_deref().unwrap_or("unknown")})).collect::<Vec<_>>(),
         });
-        projects.push(ProjectInfo { name: name.clone(), project_type, sha: "unknown".to_string(), scan_status, interfaces });
+        let path = project_paths.get(name).cloned(); // [ADDED] Link workspace path to metadata
+        projects.push(ProjectInfo { name: name.clone(), project_type, sha: "unknown".to_string(), scan_status, interfaces, path });
     }
     let project_map: HashMap<String, &ActualJson> = project_actuals.iter().map(|(k, v)| (k.clone(), v)).collect();
     let scan_status_map = scan_statuses.clone();
@@ -476,7 +482,6 @@ pub fn apply_patch_yaml(yaml_str: &str) -> anyhow::Result<()> {
 // ---------- Intent overlay merge ----------
 
 pub fn merge_intent_into_actual(actual: &mut ActualJson, intent: &InterfacesYml) {
-    // Transfer project type from intent to actual for downstream use
     if let Some(ref pt) = intent.project_type {
         actual.project_type = Some(pt.clone());
     }
