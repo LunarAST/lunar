@@ -324,7 +324,7 @@ fn patch_cmd(file: Option<String>) -> Result<()> {
 
 // ---------- Interactive mode ----------
 
-fn interactive_mode() -> ExitCode {
+async fn interactive_mode() -> ExitCode {
     loop {
         let state = guide::analyze();
         println!();
@@ -409,8 +409,8 @@ fn interactive_mode() -> ExitCode {
             "lunar diff" => diff(),
             "lunar sync --apply" => sync(true, false),
             "lunar map" => {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(map(None, None, false, None, false))
+                
+                map(None, None, false, None, false).await
             }
             "lunar doctor" => { doctor_check(); Ok(()) }
             _ => Ok(()),
@@ -443,13 +443,13 @@ environment: production
 #[tokio::main]
 async fn main() -> ExitCode {
     if std::env::args().len() == 1 {
-        return interactive_mode();
+        return interactive_mode().await;
     }
 
     let cli = Cli::parse();
     let command = match cli.command {
         Some(cmd) => cmd,
-        None => return interactive_mode(),
+        None => return interactive_mode().await,
     };
 
     let result = match command {
