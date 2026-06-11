@@ -1,11 +1,17 @@
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use lunar::{
+use lunar_interface::{
     ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
     generate_lunar_map, compare_routes, build_structural_index,
-    run_adapter, DiffResult, doctor_check, cleanup_local, apply_patch_yaml,
-    merge_intent_into_actual, uploader, guide,
+    merge_intent_into_actual, DiffResult,
+};
+use lunar::{
+    adapter::run_adapter,
+    patch::apply_patch_yaml,
+    doctor::doctor_check,
+    cleanup::cleanup_local,
+    uploader, guide,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -241,7 +247,7 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
     };
 
     let mut project_actuals = HashMap::new();
-    let mut project_paths = HashMap::new(); // [ADDED] Track absolute workspace path mappings dynamically
+    let mut project_paths = HashMap::new();
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
         let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
@@ -255,7 +261,6 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
         }
         project_actuals.insert(name.clone(), actual);
 
-        // [ADDED] Derive workspace directory by finding the grand-parent of .interfaces-autogen.json
         let workspace_path = Path::new(path_str)
             .parent()
             .and_then(|p| p.parent())
@@ -263,7 +268,6 @@ async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, buck
             .unwrap_or_else(|| "unknown".to_string());
         project_paths.insert(name.clone(), workspace_path);
     }
-    // [MODIFIED] Pass dynamically discovered path map into topology generator
     let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new(), &project_paths);
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
 
