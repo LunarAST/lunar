@@ -37,8 +37,8 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    Pull,   // [ADDED] Codex-style UX: Pull & merge latest AI contract patch interactively
-    Serve,  // [ADDED] Codex-style UX: Spawn and run the light-weight serving daemon instantly
+    Pull,
+    Serve,
     Map {
         #[arg(short = 'c', long)]
         config: Option<String>,
@@ -240,18 +240,18 @@ async fn sync_from_todo() -> Result<()> {
     stream.read_to_string(&mut response).await?;
 
     let body = response.split("\r\n\r\n").nth(1)
-        .ok_or_else(|| anyhow::anyhow!("Invalid response from lunar-serve."))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid response from lunar-serve."));
 
-    let json_val: serde_json::Value = serde_json::from_str(body)?;
+    let json_val: serde_json::Value = serde_json::from_str(body?)?;
     let patch_str = json_val.get("tasks")
         .and_then(|t| t.as_array())
         .and_then(|arr| arr.get(0))
         .and_then(|first| first.get("patch"))
         .and_then(|p| p.as_str())
-        .ok_or_else(|| anyhow::anyhow!("No pending AI patch found in the active Todo list."))?;
+        .ok_or_else(|| anyhow::anyhow!("No pending AI patch found in the active Todo list."));
 
     println!("✓ AI patch retrieved successfully!");
-    apply_patch_yaml(patch_str)
+    apply_patch_yaml(patch_str?)
 }
 
 /// Spawns the local HTTP lunar-serve daemon natively.
@@ -469,6 +469,8 @@ async fn interactive_mode() -> ExitCode {
             options.push(("Scan project (re-extract)", "lunar scan"));
             options.push(("Show changes", "lunar diff"));
             options.push(("Sync contracts", "lunar sync --apply"));
+            options.push(("Pull AI contract patch (lunar pull)", "lunar pull")); // [ADDED] Codex-style Menu
+            options.push(("Launch serving daemon (lunar serve)", "lunar serve")); // [ADDED] Codex-style Menu
             options.push(("Generate topology", "lunar map"));
             options.push(("Health check", "lunar doctor"));
         }
@@ -505,6 +507,8 @@ async fn interactive_mode() -> ExitCode {
             "lunar scan" => scan(),
             "lunar diff" => diff(),
             "lunar sync --apply" => sync(true, false),
+            "lunar pull" => sync_from_todo().await, // [ADDED] Trigger pull from interactive menu
+            "lunar serve" => run_serve_command(), // [ADDED] Trigger serve from interactive menu
             "lunar map" => {
                 map(None, None, false, None, false).await
             }
@@ -552,8 +556,8 @@ async fn main() -> ExitCode {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
-        Commands::Pull => sync_from_todo().await, // [ADDED] Map "lunar pull" directly to our TCP client
-        Commands::Serve => run_serve_command(), // [ADDED] Map "lunar serve" to spawn serving daemon
+        Commands::Pull => sync_from_todo().await,
+        Commands::Serve => run_serve_command(),
         Commands::Map { config, output, upload, bucket, yes } => {
             map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }
