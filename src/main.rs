@@ -36,6 +36,8 @@ enum Commands {
         apply: bool,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        from_todo: bool, // [ADDED] Task D: Pull proposed patch directly from local todo
     },
     Map {
         #[arg(short = 'c', long)]
@@ -205,6 +207,51 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     fs::write(&interfaces_path, serde_yaml::to_string(&interfaces)?)?;
     println!("✓ interfaces.yml updated");
     Ok(())
+}
+
+/// [ADDED] Task D: Zero-dependency TCP-Socket HTTP Client to pull todo patch and merge.
+async fn sync_from_todo() -> Result<()> {
+    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
+    if !interfaces_path.exists() {
+        anyhow::bail!("interfaces.yml missing. Run 'lunar init' first.");
+    }
+
+    let content = fs::read_to_string(&interfaces_path)?;
+    let yaml_val: serde_yaml::Value = serde_yaml::from_str(&content)?;
+    let project_name = yaml_val.get("project")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("interfaces.yml 'project' field is empty or missing."))?;
+
+    let port: u16 = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string()).parse().unwrap_or(8787);
+    println!("📡 Fetching proposed AI patch from local serve (127.0.0.1:{})...", port);
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).await?;
+    let request = format!(
+        "GET /api/v1/projects/{}/todo HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n",
+        project_name, port
+    );
+    stream.write_all(request.as_bytes()).await?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+
+    let body = response.split("\r\n\r\n").nth(1)
+        .ok_or_else(|| anyhow::anyhow!("Invalid response from lunar-serve."))?;
+
+    let json_val: serde_json::Value = serde_json::from_str(body)?;
+    let patch_str = json_val.get("tasks")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.get(0))
+        .and_then(|first| first.get("patch"))
+        .and_then(|p| p.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No pending AI patch found in the active Todo list."))?;
+
+    println!("✓ AI patch retrieved successfully!");
+    apply_patch_yaml(patch_str)
 }
 
 fn auto_detect_projects(base_dir: &Path) -> Result<HashMap<String, String>> {
@@ -465,7 +512,13 @@ async fn main() -> ExitCode {
     let result = match command {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
-        Commands::Sync { apply, dry_run } => sync(apply, dry_run),
+        Commands::Sync { apply, dry_run, from_todo } => {
+            if from_todo {
+                sync_from_todo().await
+            } else {
+                sync(apply, dry_run)
+            }
+        }
         Commands::Map { config, output, upload, bucket, yes } => {
             map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }

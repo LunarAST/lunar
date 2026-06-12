@@ -24,7 +24,8 @@
             "path": "/api/v1/health"
           }
         ]
-      }
+      },
+      "path": "/opt/anaphase-helix"
     },
     {
       "name": "helix-mind",
@@ -34,7 +35,8 @@
       "interfaces": {
         "consumed": [],
         "exposed": []
-      }
+      },
+      "path": "/opt/helix-mind"
     },
     {
       "name": "cellrix",
@@ -44,7 +46,8 @@
       "interfaces": {
         "consumed": [],
         "exposed": []
-      }
+      },
+      "path": "/opt/cellrix"
     }
   ],
   "alignments": [

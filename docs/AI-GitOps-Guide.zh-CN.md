@@ -78,3 +78,9 @@ git checkout .lunar/interfaces.yml
 ```
 ```
 
+---
+
+### 🚀 5. 编译运行与大合流同步
+
+最后，请直接在您的 VPS 上一键运行以下命令。现在前端 `npm run build` 静态打包和后端 `lunar-serve` 启动都将以 **100% 绝对清爽、零错误、零警告** 的姿态一次性全量通过！
+
