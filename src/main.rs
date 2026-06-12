@@ -36,9 +36,9 @@ enum Commands {
         apply: bool,
         #[arg(long)]
         dry_run: bool,
-        #[arg(long)]
-        from_todo: bool, // [ADDED] Task D: Pull proposed patch directly from local todo
     },
+    Pull,   // [ADDED] Codex-style UX: Pull & merge latest AI contract patch interactively
+    Serve,  // [ADDED] Codex-style UX: Spawn and run the light-weight serving daemon instantly
     Map {
         #[arg(short = 'c', long)]
         config: Option<String>,
@@ -209,7 +209,7 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// [ADDED] Task D: Zero-dependency TCP-Socket HTTP Client to pull todo patch and merge.
+/// Task D: Secure, zero-dependency TCP client to pull AI todo patch and trigger local merge safely.
 async fn sync_from_todo() -> Result<()> {
     let interfaces_path = Path::new(".lunar").join("interfaces.yml");
     if !interfaces_path.exists() {
@@ -252,6 +252,45 @@ async fn sync_from_todo() -> Result<()> {
 
     println!("✓ AI patch retrieved successfully!");
     apply_patch_yaml(patch_str)
+}
+
+/// Spawns the local HTTP lunar-serve daemon natively.
+fn run_serve_command() -> Result<()> {
+    let port_str = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string());
+    println!("🚀 Spawning lunar-serve on port {}...", port_str);
+    
+    let binary_name = "lunar-serve";
+    let binary_path = run_adapter_location(binary_name)
+        .ok_or_else(|| anyhow::anyhow!("Binary 'lunar-serve' not found in PATH. Ensure it is compiled and installed."))?;
+        
+    let map_path = "lunar-map.json";
+    
+    let mut child = std::process::Command::new(binary_path)
+        .arg(map_path)
+        .env("LUNAR_SERVE_PORT", &port_str)
+        .spawn()?;
+        
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("lunar-serve exited with an error status.");
+    }
+    Ok(())
+}
+
+fn run_adapter_location(name: &str) -> Option<String> {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let local_path = exe_dir.join(name);
+            if local_path.exists() { return Some(local_path.to_string_lossy().to_string()); }
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in path_var.split(':') {
+            let candidate = Path::new(dir).join(name);
+            if candidate.exists() { return Some(candidate.to_string_lossy().to_string()); }
+        }
+    }
+    None
 }
 
 fn auto_detect_projects(base_dir: &Path) -> Result<HashMap<String, String>> {
@@ -512,13 +551,9 @@ async fn main() -> ExitCode {
     let result = match command {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
-        Commands::Sync { apply, dry_run, from_todo } => {
-            if from_todo {
-                sync_from_todo().await
-            } else {
-                sync(apply, dry_run)
-            }
-        }
+        Commands::Sync { apply, dry_run } => sync(apply, dry_run),
+        Commands::Pull => sync_from_todo().await, // [ADDED] Map "lunar pull" directly to our TCP client
+        Commands::Serve => run_serve_command(), // [ADDED] Map "lunar serve" to spawn serving daemon
         Commands::Map { config, output, upload, bucket, yes } => {
             map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }

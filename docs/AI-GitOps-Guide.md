@@ -1,25 +1,31 @@
-# 🌙 LunarAST AI-GitOps Quick Start Guide
-This guide helps human developers and AI agents conduct **frictionless, seamless, fully secure and rollback-enabled AI collaborative development** via the `lunar-serve` Read-Only Distribution Layer, `lunar-scope` Topology Canvas and the local `lunar` CLI.
+# 🌙 LunarAST AI-GitOps Operations & Alignment Protocol
+
+This manual governs the zero-friction, cryptographic, decentralized collaboration loop between **Human Developers** and **Autonomous AI Agents** using the LunarAST ecosystem.
 
 ---
 
-## 🧭 1. Developer Local Workflow (The 1-Minute Developer Flow)
-Run these steps every time you update code on your VPS or local machine:
+## 🧭 1. Human Local Workspace Loop (Out-of-the-Box UX)
+
+LunarAST CLI provides simplified, Codex-inspired workflow commands. Every time you modify your code locally on the VPS/PC, just run:
 
 ```bash
-# Step 1: Navigate to the root directory of the target project (e.g. helix-mind) for static extraction
-cd /opt/helix-mind && lunar scan
+# Step 1: Scan and extract physical facts (Run inside your project, e.g., /opt/helix-mind)
+lunar scan
 
-# Step 2: Update the global topology map to automatically sync the latest code state with workspace paths
+# Step 2: Regenerate the global map (Auto-aligns workspace paths and strips build noise)
 lunar map -o /opt/lunar-map.json
+
+# Step 3: Run the lightweight HTTP serving daemon instantly
+lunar serve
 ```
 
 ---
 
-## 🤖 2. Guide AI Agents for Autonomous Collaboration (How to Guide Any AI Agent)
-When interacting with any online AI (e.g. GPT-4o, Claude 3.5), use the **AI Developer Mindset Prompt** below directly:
+## 🤖 2. Bootstrapping AI Agents (Case-Insensitive Normalization)
 
-> Hello AI Assistant! I am currently working on a Rust project. You can inspect its up-to-date interface contracts and read its local source files dynamically via my secure LunarAST mirror.
+When starting a conversation with any external AI Agent (e.g., GPT-4o, Claude 3.5), simply copy and paste this standard **AI System Instruction** to grant them instant "vision" over your VPS codebase:
+
+> Hello AI Assistant! I am currently working on a project. You can inspect its up-to-date interface contracts and read its local source files dynamically via my secure LunarAST mirror.
 > 
 > Please follow these steps to "see" and "explore" my codebase:
 > 
@@ -39,41 +45,40 @@ When interacting with any online AI (e.g. GPT-4o, Claude 3.5), use the **AI Deve
 
 ---
 
-## 🛠️ 3. AI-Assisted Patch Pipeline for `interfaces.yml` (AI-Assisted Contract Synthesis)
-### Phase 1: AI Auto-Generates Todo Items
-After reading source code via the `/raw/` endpoint, the AI will detect missing interface contracts and automatically submit YAML contract patch proposals to the VPS in the background:
-*   **Request**: `POST https://lunar.aifify.com/api/v1/projects/helix-mind/todo`
+## 🛠️ 3. Decoupled AI Agent Instructions (No Hardcoding)
 
-### Phase 2: Cross-Model AI Peer Review (AI-on-AI Auditing)
-Before human confirmation and merge, forward the following endpoint to a second AI auditor (e.g. Claude 3.5):
-*   **Endpoint**: `https://lunar.aifify.com/api/v1/projects/helix-mind/todo/diff`
-*   **Instruction**: *“Please fetch this URL to examine the proposed YAML contract patch and audit it for potential MethodMismatch or Orphaned risks.”*
-
-### Phase 3: One-Click Manual Alignment (Pull-to-Align)
-Run this concise one-liner in your VPS terminal to safely pull changes and launch the in-terminal review & merger:
-```bash
-lunar sync --from-todo
-```
-*   The CLI will automatically display the code diff.
-*   Type `y` to confirm and complete the merge.
+To allow customized prompting for different projects (e.g., `Cellrix` vs `Helix-Mind`), `lunar-serve` dynamically scans for `.lunar/ai-instruction.md` inside your project directory. 
+*   **Behavior**: If `.lunar/ai-instruction.md` is found, the server automatically prepends it to the top of the `/tree` endpoint. If missing, it gracefully falls back to a clean default.
+*   **Action**: Create a custom `.lunar/ai-instruction.md` inside your repository to define unique behaviors for specialized AI nodes.
 
 ---
 
-## 🛡️ 4. Atomic Rollback Protection (The Rollback Guarantee)
-If defects are found in the AI-generated patch after merging, use the following solutions to revert changes:
+## 🔒 4. AI-on-AI Peer Reviewing & Cryptographic Validation
 
-### Option 1: Restore from Automatic System Backups (Zero Residual Files) [4.3]
-```bash
-cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -n 1) .lunar/interfaces.yml
-```
+### Step 1: AI Generates & POSTs Patch
+The AI assistant analyzes the codebase via `/raw` and publishes its proposed contract updates to the handover todo:
+*   `POST https://lunar.aifify.com/api/v1/projects/helix-mind/todo`
 
-### Option 2: Native Git Restoration [2.2]
+### Step 2: Cross-Model Auditing (Zero Copy-Paste)
+Before you merge, copy the URL of the generated comparative Markdown diff and feed it directly to another AI auditor (e.g. Claude):
+*   👉 `https://lunar.aifify.com/api/v1/projects/helix-mind/todo/diff`
+*   **Prompt**: *“Please fetch this URL to audit the pending contract diff proposed by the previous AI model, checking for any API regressions or security risks.”*
+
+### Step 3: One-Click Local Align & Merge
+In your project directory, execute the simple, out-of-the-box pull command:
 ```bash
-git checkout .lunar/interfaces.yml
+lunar pull
 ```
+*   **Under the hood**: The CLI connects to `127.0.0.1:8787`, pulls the JSON, validates its **Ed25519 signature** to prevent malicious payload injections, and prints a beautiful Git-style Diff.
+*   Confirm with `y` to apply, merge, and backup.
 
 ---
 
-## 🚀 5. Build, Run & Full Synchronization
-Finally, execute the relevant commands directly on your VPS.
-The frontend static build with `npm run build` and backend startup with `lunar-serve` will run through completely in one go — **100% clean, with zero errors and zero warnings**.
+## 🛡️ 5. Zero-Trust Atomic Rollbacks
+
+If any error occurs post-merge:
+
+*   **Option 1 (System Backup Copy)**:
+    `cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -n 1) .lunar/interfaces.yml`
+*   **Option 2 (Git-Native Restore)**:
+    `git checkout .lunar/interfaces.yml`
