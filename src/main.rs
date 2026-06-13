@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use lunar::commands::{scan, diff, sync, pull, serve, interactive};
+use lunar::commands::{scan, diff, sync, pull, serve, interactive, gen};
 use lunar::{
     doctor::doctor_check,
     cleanup::{cleanup_local, cleanup_archives},
@@ -32,6 +32,10 @@ enum Commands {
         yes: bool,
     },
     Serve,
+    Gen {
+        #[command(subcommand)] // [FIXED] Changed #[arg] attribute to #[command] for nested subcommands parsing
+        target: GenTarget,
+    },
     Map {
         #[arg(short = 'c', long)]
         config: Option<String>,
@@ -65,6 +69,23 @@ enum Commands {
     Share,
 }
 
+#[derive(Subcommand, Clone)]
+pub enum GenTarget {
+    Interfaces {
+        #[arg(long)]
+        prompt: bool,
+    },
+    #[command(name = "ci-144")]
+    Ci144 {
+        #[arg(long)]
+        prompt: bool,
+        #[arg(long, default_value = "rust")]
+        lang: String,
+        #[arg(long, default_value = "src/bin")]
+        out_dir: String,
+    },
+}
+
 fn current_dir_project_name() -> String {
     std::env::current_dir()
         .ok()
@@ -90,6 +111,12 @@ async fn main() -> ExitCode {
         Commands::Sync { apply, dry_run } => sync::execute(apply, dry_run),
         Commands::Pull { project, yes } => pull::execute(project, yes).await,
         Commands::Serve => serve::execute(),
+        Commands::Gen { target } => match target {
+            GenTarget::Interfaces { prompt } => gen::execute_interfaces(prompt).await,
+            GenTarget::Ci144 { prompt, lang, out_dir } => {
+                gen::execute_ci144(prompt, &lang, &out_dir).await
+            }
+        },
         Commands::Map { config, output, upload, bucket, yes } => {
             lunar::map::map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }
