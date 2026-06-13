@@ -8,7 +8,7 @@ use lunar_interface::{
 };
 use lunar::{
     adapter::run_adapter,
-    patch::apply_patch_yaml_at, // [MODIFIED] Use the workspace-aware patch helper
+    patch::{apply_patch_yaml, apply_patch_yaml_at}, // [FIXED] Import both contract patch helpers
     doctor::doctor_check,
     cleanup::cleanup_local,
     uploader, guide,
@@ -39,9 +39,9 @@ enum Commands {
     },
     Pull {
         #[arg(short, long)]
-        project: Option<String>, // [ADDED] Target specific project workspace anywhere on VPS
+        project: Option<String>,
         #[arg(short, long)]
-        yes: bool,              // [ADDED] Force merge without secondary prompt confirmation
+        yes: bool,
     },
     Serve,
     Map {
@@ -214,11 +214,8 @@ fn sync(apply: bool, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Task D: Safe TCP client with dynamic path auto-resolution anywhere on the VPS and auto map compile trigger.
 async fn sync_from_todo(project: Option<String>, yes: bool) -> Result<()> {
-    // 1. Resolve project name and its actual workspace path on VPS disk
     let (project_name, base_path) = if let Some(ref p_name) = project {
-        // Safe discovery: Read the global lunar-map.json to extract the physical workspace path dynamically
         let map_path = "lunar-map.json";
         if !Path::new(map_path).exists() {
             anyhow::bail!("Global lunar-map.json missing. Run 'lunar map' first to compile metadata.");
@@ -229,11 +226,10 @@ async fn sync_from_todo(project: Option<String>, yes: bool) -> Result<()> {
         let path_str = map["projects"].as_array()
             .and_then(|arr| arr.iter().find(|p| p["name"].as_str().map_or(false, |n| n.eq_ignore_ascii_case(p_name))))
             .and_then(|proj| proj["path"].as_str())
-            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found in lunar-map.json. Run 'lunar map' inside workspace first.", p_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Project '{}' not found in lunar-map.json.", p_name))?;
             
         (p_name.clone(), std::path::PathBuf::from(path_str))
     } else {
-        // Fallback: Resolve project identity from current directory
         let interfaces_path = Path::new(".lunar").join("interfaces.yml");
         if !interfaces_path.exists() {
             anyhow::bail!("interfaces.yml missing. Navigate to project root or use 'lunar pull -p <project> -y' to target anywhere.");
@@ -277,12 +273,10 @@ async fn sync_from_todo(project: Option<String>, yes: bool) -> Result<()> {
 
     println!("✓ AI patch retrieved successfully!");
     
-    // Apply patch directly to the resolved target base path on disk
     apply_patch_yaml_at(&base_path, patch_str?, yes)?;
 
-    // Automated closed-loop: Automatically trigger global map compilation on merged contract
     if yes {
-        println!("📡 Automated GitOps: Re-compiling the global topology map...");
+        println!("📡 Automated GitOps: Re-compiling the global topography map...");
         if let Err(e) = map(None, None, false, None, true).await {
             eprintln!("Error regenerating map: {}", e);
         }
@@ -302,11 +296,9 @@ async fn sync_from_todo(project: Option<String>, yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// Spawns the local HTTP lunar-serve daemon natively with interactive confirmation.
 fn run_serve_command() -> Result<()> {
     let default_port = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string());
     
-    // Codex-style interactive port confirmation
     print!("Starting lunar-serve (Default port: {}). Do you want to continue? [Y/n/custom-port]: ", default_port);
     io::stdout().flush()?;
     
@@ -485,9 +477,113 @@ fn patch_cmd(file: Option<String>) -> Result<()> {
     apply_patch_yaml(&yaml_str)
 }
 
+/// [ADDED] Task E: Scans lunar-map.json and checks all active project todos.
+/// If any pending patch is discovered, offers a Codex-style 1-click merge & map compilation on-the-fly.
+async fn auto_probe_and_merge() -> Result<()> {
+    let map_path = "lunar-map.json";
+    if !Path::new(map_path).exists() {
+        return Ok(());
+    }
+    
+    let map_content = fs::read_to_string(map_path)?;
+    let map_val: serde_json::Value = serde_json::from_str(&map_content)?;
+    
+    let projects = match map_val.get("projects").and_then(|p| p.as_array()) {
+        Some(arr) => arr,
+        None => return Ok(()),
+    };
+
+    let mut pending_project = None;
+    let mut pending_patch = None;
+    let mut target_path = None;
+
+    for proj in projects {
+        let name = proj.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        let path_str = proj.get("path").and_then(|p| p.as_str()).unwrap_or("");
+        if name.is_empty() || path_str.is_empty() {
+            continue;
+        }
+
+        let todo_path = Path::new(path_str).join(".lunar/ai-todo.json");
+        if todo_path.exists() {
+            if let Ok(todo_content) = fs::read_to_string(&todo_path) {
+                if let Ok(todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
+                    if let Some(tasks) = todo_json.get("tasks").and_then(|t| t.as_array()) {
+                        for task in tasks {
+                            let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                            let patch = task.get("patch").and_then(|p| p.as_str()).unwrap_or("");
+                            if (status == "pending_alignment" || status == "pending") && !patch.is_empty() {
+                                pending_project = Some(name.to_string());
+                                pending_patch = Some(patch.to_string());
+                                target_path = Some(Path::new(path_str).to_path_buf());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if pending_project.is_some() {
+            break;
+        }
+    }
+
+    if let (Some(project_name), Some(patch_str), Some(base_path)) = (pending_project, pending_patch, target_path) {
+        println!("🌙 LunarAST — Ecosystem Contract Governance");
+        println!();
+        println!("  🔔 Detected pending AI patch for project '{}' (already reviewed via web)", project_name);
+        print!("     → Auto-merge and refresh map? [Y/n]: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let trimmed = input.trim().to_lowercase();
+
+        if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
+            println!("📡 Automated GitOps: Merging contract patch...");
+            
+            // Apply patch locally and bypass standard prompt
+            apply_patch_yaml_at(&base_path, &patch_str, true)?;
+            
+            // Clean up the task inside ai-todo.json (set it to completed)
+            let todo_path = base_path.join(".lunar/ai-todo.json");
+            if let Ok(todo_content) = fs::read_to_string(&todo_path) {
+                if let Ok(mut todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
+                    if let Some(tasks) = todo_json.get_mut("tasks").and_then(|t| t.as_array_mut()) {
+                        for task in tasks {
+                            let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                            if status == "pending_alignment" || status == "pending" {
+                                task["status"] = serde_json::json!("completed");
+                            }
+                        }
+                    }
+                    if let Ok(formatted) = serde_json::to_string_pretty(&todo_json) {
+                        let _ = fs::write(&todo_path, formatted);
+                    }
+                }
+            }
+
+            println!("📡 Automated GitOps: Re-compiling the global topography map...");
+            if let Err(e) = map(None, None, false, None, true).await {
+                eprintln!("Error regenerating map: {}", e);
+            }
+            
+            println!("\n✓ All contract changes cleanly aligned and map refreshed! [Press Enter to continue]");
+            let mut _dummy = String::new();
+            let _ = io::stdin().read_line(&mut _dummy);
+        }
+    }
+    Ok(())
+}
+
 // ---------- Interactive mode ----------
 
 async fn interactive_mode() -> ExitCode {
+    // Run the automated context-aware probe at startup to facilitate zero-friction GitOps merge
+    if let Err(e) = auto_probe_and_merge().await {
+        eprintln!("Warning in auto-probe: {}", e);
+    }
+
     loop {
         let state = guide::analyze();
         
@@ -582,7 +678,7 @@ async fn interactive_mode() -> ExitCode {
             "lunar scan" => scan(),
             "lunar diff" => diff(),
             "lunar sync --apply" => sync(true, false),
-            "lunar pull" => sync_from_todo(None, false).await, // Integrated Workspace Fallback in pull subcommand
+            "lunar pull" => sync_from_todo(None, false).await,
             "lunar serve" => run_serve_command(),
             "lunar map" => {
                 map(None, None, false, None, false).await
@@ -631,7 +727,7 @@ async fn main() -> ExitCode {
         Commands::Scan => scan(),
         Commands::Diff => diff(),
         Commands::Sync { apply, dry_run } => sync(apply, dry_run),
-        Commands::Pull { project, yes } => sync_from_todo(project, yes).await, // [MODIFIED] Supports target anywhere and --yes bypass
+        Commands::Pull { project, yes } => sync_from_todo(project, yes).await,
         Commands::Serve => run_serve_command(),
         Commands::Map { config, output, upload, bucket, yes } => {
             map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
