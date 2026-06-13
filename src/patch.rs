@@ -4,10 +4,10 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
-fn load_known_projects() -> Vec<String> {
+fn load_known_projects(base_path: &Path) -> Vec<String> {
     let candidates: Vec<std::path::PathBuf> = vec![
-        Path::new("repos.json").to_path_buf(),
-        Path::new(".lunar").join("repos.json"),
+        base_path.join("repos.json"),
+        base_path.join(".lunar/repos.json"),
     ];
     for path in candidates {
         if path.exists() {
@@ -24,13 +24,18 @@ fn load_known_projects() -> Vec<String> {
 }
 
 pub fn apply_patch_yaml(yaml_str: &str) -> Result<()> {
-    let interfaces_path = Path::new(".lunar").join("interfaces.yml");
-    let backup_dir = Path::new(".lunar").join(".backup");
+    apply_patch_yaml_at(Path::new("."), yaml_str, false)
+}
+
+/// [ADDED] Supports applying patches to any target workspace directory with optional force override.
+pub fn apply_patch_yaml_at(base_path: &Path, yaml_str: &str, force: bool) -> Result<()> {
+    let interfaces_path = base_path.join(".lunar/interfaces.yml");
+    let backup_dir = base_path.join(".lunar/.backup");
 
     let patch: InterfacesYml = serde_yaml::from_str(yaml_str)
         .map_err(|e| anyhow::anyhow!("Invalid YAML patch: {}", e))?;
 
-    let known_projects = load_known_projects();
+    let known_projects = load_known_projects(base_path);
     if let Some(ref consumed) = patch.consumed {
         for item in consumed {
             if let Some(ref target) = item.target_project {
@@ -80,19 +85,22 @@ pub fn apply_patch_yaml(yaml_str: &str) -> Result<()> {
     if let Some(ref consumed) = interfaces.consumed { for item in consumed { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
     if let Some(ref pt) = interfaces.project_type { println!("  Project type: {}", pt); }
 
-    print!("Proceed with merge? [y/N] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
-        use std::io::BufRead;
-        let mut reader = std::io::BufReader::new(&mut tty);
-        reader.read_line(&mut input)?;
-    } else {
-        io::stdin().read_line(&mut input)?;
-    }
-    if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
-        println!("Merge cancelled.");
-        return Ok(());
+    // [ADDED] Force flag to bypass interactive confirmation for automation
+    if !force {
+        print!("Proceed with merge? [y/N] ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
+            use std::io::BufRead;
+            let mut reader = std::io::BufReader::new(&mut tty);
+            reader.read_line(&mut input)?;
+        } else {
+            io::stdin().read_line(&mut input)?;
+        }
+        if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
+            println!("Merge cancelled.");
+            return Ok(());
+        }
     }
 
     if interfaces_path.exists() {
