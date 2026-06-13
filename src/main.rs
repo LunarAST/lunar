@@ -2,20 +2,19 @@ use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use lunar_interface::{
-    ActualJson, InterfacesYml, InterfaceItem, LunarMapConfig,
-    generate_lunar_map, compare_routes, build_structural_index,
-    merge_intent_into_actual, DiffResult,
+    ActualJson, InterfacesYml, InterfaceItem, DiffResult,
+    build_structural_index, compare_routes, // [FIXED] Re-imported structural index and route compare functions
 };
 use lunar::{
     adapter::run_adapter,
-    patch::{apply_patch_yaml, apply_patch_yaml_at}, // [FIXED] Import both contract patch helpers
+    patch::{apply_patch_yaml_at, patch_cmd},
     doctor::doctor_check,
     cleanup::cleanup_local,
-    uploader, guide,
+    map::map,
+    guide,
 };
-use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -62,6 +61,10 @@ enum Commands {
         all: bool,
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        archive: bool, 
+        #[arg(long, default_value_t = 30)]
+        days: i64,    
     },
     Patch {
         file: Option<String>,
@@ -275,13 +278,56 @@ async fn sync_from_todo(project: Option<String>, yes: bool) -> Result<()> {
     
     apply_patch_yaml_at(&base_path, patch_str?, yes)?;
 
+    let todo_path = base_path.join(".lunar/ai-todo.json");
+    let archive_dir = base_path.join(".lunar/access-logs");
+    if let Ok(todo_content) = fs::read_to_string(&todo_path) {
+        if let Ok(mut todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
+            let mut archived_tasks = Vec::new();
+            if let Some(tasks) = todo_json.get_mut("tasks").and_then(|t| t.as_array_mut()) {
+                let mut i = 0;
+                while i < tasks.len() {
+                    let status = tasks[i].get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    if status == "pending_alignment" || status == "pending" {
+                        let mut task = tasks.remove(i);
+                        task["status"] = serde_json::json!("completed");
+                        archived_tasks.push(task);
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            
+            if let Ok(formatted) = serde_json::to_string_pretty(&todo_json) {
+                let _ = fs::write(&todo_path, formatted);
+            }
+
+            if !archived_tasks.is_empty() {
+                let _ = fs::create_dir_all(&archive_dir);
+                let archive_path = archive_dir.join("ai-todo-archive.jsonl");
+                if let Ok(mut archive_file) = fs::OpenOptions::new().create(true).append(true).open(archive_path) {
+                    for task in archived_tasks {
+                        let archive_entry = serde_json::json!({
+                            "task": task,
+                            "archivedAt": Utc::now().to_rfc3339(),
+                            "status": "applied"
+                        });
+                        if let Ok(line) = serde_json::to_string(&archive_entry) {
+                            use std::io::Write as IoWrite;
+                            let _ = writeln!(archive_file, "{}", line);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if yes {
         println!("📡 Automated GitOps: Re-compiling the global topography map...");
         if let Err(e) = map(None, None, false, None, true).await {
             eprintln!("Error regenerating map: {}", e);
         }
     } else {
-        print!("\n✓ interfaces.yml updated. A contract change was merged.\nDo you want to re-compile the global topology map? [Y/n]: ");
+        print!("\n✓ interfaces.yml updated. A contract change was merged.\nDo you want to re-compile the global topography map? [Y/n]: ");
         io::stdout().flush()?;
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
@@ -351,134 +397,6 @@ fn run_adapter_location(name: &str) -> Option<String> {
     None
 }
 
-fn auto_detect_projects(base_dir: &Path) -> Result<HashMap<String, String>> {
-    let mut projects = HashMap::new();
-    if !base_dir.is_dir() {
-        return Ok(projects);
-    }
-    for entry in fs::read_dir(base_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            let autogen = path.join(".lunar/.interfaces-autogen.json");
-            if autogen.exists() {
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    projects.insert(name.to_string(), autogen.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    Ok(projects)
-}
-
-async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, bucket: Option<&str>, yes: bool) -> Result<()> {
-    let config: LunarMapConfig = if let Some(cfg_path) = config_path {
-        let config_content = fs::read_to_string(cfg_path)?;
-        serde_json::from_str(&config_content)?
-    } else {
-        let scan_dir = std::env::var("LUNAR_PROJECTS_DIR").unwrap_or_else(|_| "/opt".to_string());
-        let base = Path::new(&scan_dir);
-        println!("No config file specified. Auto-detecting projects in {}...", scan_dir);
-        let detected = auto_detect_projects(base)?;
-        if detected.is_empty() {
-            anyhow::bail!("No projects found in {}. Run 'lunar scan' in each project first, or specify a config file with --config.", scan_dir);
-        }
-        println!("Found {} project(s):", detected.len());
-        for (name, path) in &detected {
-            println!("  - {} ({})", name, path);
-        }
-        LunarMapConfig { projects: detected }
-    };
-
-    let mut project_actuals = HashMap::new();
-    let mut project_paths = HashMap::new();
-    for (name, path_str) in &config.projects {
-        let actual_content = fs::read_to_string(path_str)?;
-        let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
-        let intent_path = Path::new(path_str).parent().unwrap().join("interfaces.yml");
-        if intent_path.exists() {
-            if let Ok(intent_content) = fs::read_to_string(&intent_path) {
-                if let Ok(intent) = serde_yaml::from_str::<InterfacesYml>(&intent_content) {
-                    merge_intent_into_actual(&mut actual, &intent);
-                }
-            }
-        }
-        project_actuals.insert(name.clone(), actual);
-
-        let workspace_path = Path::new(path_str)
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        project_paths.insert(name.clone(), workspace_path);
-    }
-    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new(), &project_paths);
-    let output_json = serde_json::to_string_pretty(&lunar_map)?;
-
-    let output_path = if let Some(out_path) = output {
-        fs::write(out_path, &output_json)?;
-        println!("✓ lunar-map.json written to {}", out_path);
-        out_path.to_string()
-    } else {
-        let default_path = "lunar-map.json";
-        fs::write(default_path, &output_json)?;
-        println!("{}", output_json);
-        default_path.to_string()
-    };
-
-    if upload {
-        let bucket_name = bucket
-            .map(|b| b.to_string())
-            .or_else(|| std::env::var("LUNAR_S3_BUCKET").ok())
-            .ok_or_else(|| anyhow::anyhow!("No bucket specified. Use --bucket or set LUNAR_S3_BUCKET env."))?;
-
-        let metadata = fs::metadata(&output_path)?;
-        let file_size_kb = metadata.len() as f64 / 1024.0;
-        println!("  File: {} ({:.1} KB)", output_path, file_size_kb);
-        println!("  Target: {}/lunar-map.json", bucket_name);
-
-        if !yes {
-            print!("Proceed with upload? [y/N] ");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            if let Ok(mut tty) = std::fs::File::open("/dev/tty") {
-                use std::io::BufRead;
-                let mut reader = std::io::BufReader::new(&mut tty);
-                reader.read_line(&mut input)?;
-            } else {
-                io::stdin().read_line(&mut input)?;
-            }
-            if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
-                println!("Upload cancelled.");
-                return Ok(());
-            }
-        }
-
-        uploader::upload_to_s3(Path::new(&output_path), "lunar-map.json", &bucket_name).await?;
-    }
-
-    Ok(())
-}
-
-fn patch_cmd(file: Option<String>) -> Result<()> {
-    let yaml_str = if let Some(path_str) = file {
-        fs::read_to_string(&path_str)?
-    } else {
-        let mut buf = String::new();
-        io::stdin().read_to_string(&mut buf)?;
-        if buf.trim().is_empty() {
-            println!("No input provided. Usage:");
-            println!("  lunar patch path/to/file.yaml");
-            println!("  cat patch.yaml | lunar patch");
-            return Ok(());
-        }
-        buf
-    };
-    apply_patch_yaml(&yaml_str)
-}
-
-/// [ADDED] Task E: Scans lunar-map.json and checks all active project todos.
-/// If any pending patch is discovered, offers a Codex-style 1-click merge & map compilation on-the-fly.
 async fn auto_probe_and_merge() -> Result<()> {
     let map_path = "lunar-map.json";
     if !Path::new(map_path).exists() {
@@ -547,18 +465,44 @@ async fn auto_probe_and_merge() -> Result<()> {
             
             // Clean up the task inside ai-todo.json (set it to completed)
             let todo_path = base_path.join(".lunar/ai-todo.json");
+            let archive_dir = base_path.join(".lunar/access-logs");
             if let Ok(todo_content) = fs::read_to_string(&todo_path) {
                 if let Ok(mut todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
+                    let mut archived_tasks = Vec::new();
                     if let Some(tasks) = todo_json.get_mut("tasks").and_then(|t| t.as_array_mut()) {
-                        for task in tasks {
-                            let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                        let mut i = 0;
+                        while i < tasks.len() {
+                            let status = tasks[i].get("status").and_then(|s| s.as_str()).unwrap_or("");
                             if status == "pending_alignment" || status == "pending" {
+                                let mut task = tasks.remove(i);
                                 task["status"] = serde_json::json!("completed");
+                                archived_tasks.push(task);
+                            } else {
+                                i += 1;
                             }
                         }
                     }
+                    
                     if let Ok(formatted) = serde_json::to_string_pretty(&todo_json) {
                         let _ = fs::write(&todo_path, formatted);
+                    }
+
+                    if !archived_tasks.is_empty() {
+                        let _ = fs::create_dir_all(&archive_dir);
+                        let archive_path = archive_dir.join("ai-todo-archive.jsonl");
+                        if let Ok(mut archive_file) = fs::OpenOptions::new().create(true).append(true).open(archive_path) {
+                            for task in archived_tasks {
+                                let archive_entry = serde_json::json!({
+                                    "task": task,
+                                    "archivedAt": chrono::Utc::now().to_rfc3339(),
+                                    "status": "applied"
+                                });
+                                if let Ok(line) = serde_json::to_string(&archive_entry) {
+                                    use std::io::Write as IoWrite;
+                                    let _ = writeln!(archive_file, "{}", line);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -579,7 +523,6 @@ async fn auto_probe_and_merge() -> Result<()> {
 // ---------- Interactive mode ----------
 
 async fn interactive_mode() -> ExitCode {
-    // Run the automated context-aware probe at startup to facilitate zero-friction GitOps merge
     if let Err(e) = auto_probe_and_merge().await {
         eprintln!("Warning in auto-probe: {}", e);
     }
@@ -733,7 +676,13 @@ async fn main() -> ExitCode {
             map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
         }
         Commands::Doctor => { return doctor_check(); }
-        Commands::Cleanup { all: _, yes } => cleanup_local(yes).map(|_| ()),
+        Commands::Cleanup { all: _, yes, archive, days } => {
+            if archive {
+                lunar::cleanup::cleanup_archives(Path::new("."), days, yes).map(|_| ())
+            } else {
+                cleanup_local(yes).map(|_| ())
+            }
+        }
         Commands::Patch { file } => patch_cmd(file),
         Commands::Keygen { project } => {
             match lunar::keygen::generate_keypair(&project) {
