@@ -4,81 +4,91 @@ This manual governs the zero-friction, cryptographic, decentralized collaboratio
 
 ---
 
-## 🧭 1. Human Local Workspace Loop (Out-of-the-Box UX)
+## 🏛️ 1. Architectural Foundation & Truth Models
+
+LunarAST implements a **Three-Tier Source-of-Truth Model** to govern interface contract state transitions without runtime monitoring or performance overhead:
+
+1. **Physical Facts (`.interfaces-autogen.json`)**: Raw route metadata extracted automatically from code syntax trees. This file is excluded via `.gitignore`.
+2. **Intent Overlay (`interfaces.yml`)**: Human-maintained, Git-tracked developer intent overrides. It is protected by the **Partial Field Override** algorithm, which safely merges AI-generated fields into intent configurations without altering manual human annotations or comments.
+3. **Escape Hatch**: Inline directive comments (`// lunar:consume`) placed above complex dynamic runtime calls that cannot be captured by static AST parsers.
+
+---
+
+## 🧭 2. Human Local Workspace Loop (Zero-Friction CLI UX)
 
 LunarAST CLI provides simplified, Codex-inspired workflow commands. Every time you modify your code locally on the VPS/PC, just run:
 
 ```bash
-# Step 1: Scan and extract physical facts (Run inside your project, e.g., /opt/helix-mind)
-lunar scan
-
-# Step 2: Regenerate the global map (Auto-aligns workspace paths and strips build noise)
-lunar map -o /opt/lunar-map.json
-
-# Step 3: Run the lightweight HTTP serving daemon instantly
-lunar serve
+lunar
 ```
 
----
+Typing `lunar` without arguments initiates the **Interactive Menu**. It displays critical boot-screen parameters in real-time:
+* **Active Port**: Dynamically loaded from configuration or `LUNAR_SERVE_PORT` (defaults to `8787` with interactive confirmation).
+* **Active Domain**: Resolves to your primary server address (e.g., `https://lunar.aifify.com` or local fallback).
+* **Workspace Root**: Your current terminal physical path.
 
-## 🤖 2. Bootstrapping AI Agents (Case-Insensitive Normalization)
-
-When starting a conversation with any external AI Agent (e.g., GPT-4o, Claude 3.5), simply copy and paste this standard **AI System Instruction** to grant them instant "vision" over your VPS codebase:
-
-> Hello AI Assistant! I am currently working on a project. You can inspect its up-to-date interface contracts and read its local source files dynamically via my secure LunarAST mirror.
-> 
-> Please follow these steps to "see" and "explore" my codebase:
-> 
-> **Step 1: Discover the File Tree**
-> Fetch this URL to retrieve the contract summary and the clean, recursive physical directory tree of the project workspace (excluding noise like build directories or pyc files):
-> 👉 `https://lunar.aifify.com/Jasonmilk/helix-mind/tree/rs`
-> 
-> **Step 2: Read Specific Files On-Demand**
-> Once you inspect the directory tree from Step 1, do NOT guess. When you need to read the contents of any specific file (e.g., `crates/helix-mind-cli/src/main.rs`), simply fetch its raw content on-demand via this mirror:
-> 👉 `https://lunar.aifify.com/Jasonmilk/helix-mind/raw/rs/<filepath>`
-> 
-> **Step 3: Read or Update the Handover TODOs**
-> To check what the previous AI session left for you, or to save your current work progress for the next session, you can GET or POST (JSON payload) to our handover scratchpad:
-> 👉 `https://lunar.aifify.com/api/v1/projects/helix-mind/todo`
-> 
-> Let's begin! Please fetch the project directory tree from Step 1, examine the folder layout, and let me know when you are ready to assist.
+### Central Operations in the Menu:
+*   `[1] Scan project`: Extracts raw physical facts.
+*   `[5] Launch serving daemon`: Spawns the decoupled `lunar-serve` backend to host the web canvas and API routes.
+*   `[6] Generate topology`: Compiles `lunar-map.json`. It automatically auto-detects absolute workspace directory paths (e.g., `/opt/cellrix`) and embeds them into the map, eliminating manual path mapping.
 
 ---
 
-## 🛠️ 3. Decoupled AI Agent Instructions (No Hardcoding)
+## 🤖 3. Bootstrapping AI Agents (Case-Insensitive Normalization)
 
-To allow customized prompting for different projects (e.g., `Cellrix` vs `Helix-Mind`), `lunar-serve` dynamically scans for `.lunar/ai-instruction.md` inside your project directory. 
-*   **Behavior**: If `.lunar/ai-instruction.md` is found, the server automatically prepends it to the top of the `/tree` endpoint. If missing, it gracefully falls back to a clean default.
-*   **Action**: Create a custom `.lunar/ai-instruction.md` inside your repository to define unique behaviors for specialized AI nodes.
+When starting a conversation with any external AI Agent (e.g., GPT-4o, Claude 3.5), simply provide them your project’s `/tree` URL:
+👉 `https://lunar.aifify.com/Jasonmilk/cellrix/tree/rs2`
+
+The server automatically maps the request. To prevent URL casing friction, the gateway normalizes all coordinate lookups to **lowercase** (`jasonmilk/cellrix/rs2`).
 
 ---
 
-## 🔒 4. AI-on-AI Peer Reviewing & Cryptographic Validation
+## 🛠️ 4. AI On-Demand Exploration & Self-Growing Contracts
 
-### Step 1: AI Generates & POSTs Patch
-The AI assistant analyzes the codebase via `/raw` and publishes its proposed contract updates to the handover todo:
-*   `POST https://lunar.aifify.com/api/v1/projects/helix-mind/todo`
+Once the AI Agent accesses the `/tree` endpoint, it instantly gains **holistic visual capabilities** and begins executing the following GitOps loop:
 
-### Step 2: Cross-Model Auditing (Zero Copy-Paste)
-Before you merge, copy the URL of the generated comparative Markdown diff and feed it directly to another AI auditor (e.g. Claude):
-*   👉 `https://lunar.aifify.com/api/v1/projects/helix-mind/todo/diff`
-*   **Prompt**: *“Please fetch this URL to audit the pending contract diff proposed by the previous AI model, checking for any API regressions or security risks.”*
+### Step 1: Read the System Instruction & File Tree
+The AI reads the response payload of `/tree/rs2`. The server dynamically prepends the **AI Agent System Instruction** (decoupled inside your repository as `.lunar/ai-instruction.md` to avoid hardcoding) at the very top of the page.
+*   **The AI learns**: It reads the `# Repository` comment headers embedded inside the file tree code block, instantly discovering how to read the project manual, use the `/raw` endpoints, and access the active todo handover lists.
+*   **The AI explores**: It browses the noise-filtered file tree at the bottom (with built-in ignore lists that completely hide `.pyc`, `.venv`, and `target` directories to save Tokens).
 
-### Step 3: One-Click Local Align & Merge
-In your project directory, execute the simple, out-of-the-box pull command:
+### Step 2: Precise File Reading
+The AI does NOT guess paths. It uses the file tree to make precise, on-demand HTTP GET requests to read specific files:
+👉 `GET https://lunar.aifify.com/Jasonmilk/cellrix/raw/rs2/crates/cellrix-core/src/lib.rs`
+
+### Step 3: Contract Modification & Task Handover
+After implementing code features, the AI realizes a contract change is needed. It automatically generates a standard YAML contract patch, signs it cryptographically using its **Ed25519 Private Key**, and uploads it as a handover task via:
+👉 `POST https://lunar.aifify.com/api/v1/projects/cellrix/todo`
+
+---
+
+## 🔒 5. Human-in-the-Loop Audit & One-Click Merge
+
+To prevent unauthorized remote writes or AI hallucinations, the AI cannot directly edit your `interfaces.yml`. You maintain 100% control of the final merge:
+
+### Step 1: AI-on-AI Peer Reviewing
+Before merging, copy the URL of the comparative diff and feed it directly to another AI auditor (e.g., Claude):
+👉 `https://lunar.aifify.com/api/v1/projects/cellrix/todo/diff`
+The auditor AI inspects the side-by-side active contract vs. proposed patch and audits it for potential `MethodMismatch` or `Orphaned` regressions.
+
+### Step 2: One-Click Auto-Probe & Merge (The Codex UX)
+Go to your VPS terminal. You do not need to `cd` to the project directory or type complex parameters. Just run:
 ```bash
-lunar pull
+lunar
 ```
-*   **Under the hood**: The CLI connects to `127.0.0.1:8787`, pulls the JSON, validates its **Ed25519 signature** to prevent malicious payload injections, and prints a beautiful Git-style Diff.
-*   Confirm with `y` to apply, merge, and backup.
+*   **Auto-Probe**: The CLI automatically scans your local map, discovers the pending todo patch, and prompts you directly on boot:
+    `🔔 Detected pending AI patch for project 'cellrix' (already reviewed via web)`
+    `→ Auto-merge and refresh map? [Y/n]: `
+*   **Action**: Press **Enter**! 
+    The CLI pulls the patch, verifies its **Ed25519 signature**, merges it into your local `interfaces.yml`, backs up your old file, marks the task as `completed` on the server, and automatically compiles the map!
+*   **Result**: Refresh `https://lunar.aifify.com/`. The project node’s Exposed ports are instantly lit on the 3D canvas!
 
 ---
 
-## 🛡️ 5. Zero-Trust Atomic Rollbacks
+## 🛡️ 6. Zero-Trust Atomic Rollbacks
 
-If any error occurs post-merge:
-
-*   **Option 1 (System Backup Copy)**:
+If any error occurs post-merge, you can restore your active branch to a 100% clean state in 1ms:
+*   **Option 1 (Ecosystem Backup Copy)**:
     `cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -n 1) .lunar/interfaces.yml`
 *   **Option 2 (Git-Native Restore)**:
     `git checkout .lunar/interfaces.yml`
