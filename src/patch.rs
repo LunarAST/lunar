@@ -1,7 +1,7 @@
 use anyhow::Result;
 use lunar_interface::InterfacesYml;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 fn load_known_projects(base_path: &Path) -> Vec<String> {
@@ -27,7 +27,6 @@ pub fn apply_patch_yaml(yaml_str: &str) -> Result<()> {
     apply_patch_yaml_at(Path::new("."), yaml_str, false)
 }
 
-/// [ADDED] Supports applying patches to any target workspace directory with optional force override.
 pub fn apply_patch_yaml_at(base_path: &Path, yaml_str: &str, force: bool) -> Result<()> {
     let interfaces_path = base_path.join(".lunar/interfaces.yml");
     let backup_dir = base_path.join(".lunar/.backup");
@@ -85,7 +84,6 @@ pub fn apply_patch_yaml_at(base_path: &Path, yaml_str: &str, force: bool) -> Res
     if let Some(ref consumed) = interfaces.consumed { for item in consumed { println!("  C: {} {} -> {}", item.method, item.path, item.target_project.as_deref().unwrap_or("?")); } }
     if let Some(ref pt) = interfaces.project_type { println!("  Project type: {}", pt); }
 
-    // [ADDED] Force flag to bypass interactive confirmation for automation
     if !force {
         print!("Proceed with merge? [y/N] ");
         io::stdout().flush()?;
@@ -112,4 +110,21 @@ pub fn apply_patch_yaml_at(base_path: &Path, yaml_str: &str, force: bool) -> Res
     fs::write(&interfaces_path, serde_yaml::to_string(&interfaces)?)?;
     println!("✓ interfaces.yml updated");
     Ok(())
+}
+
+pub fn patch_cmd(file: Option<String>) -> Result<()> {
+    let yaml_str = if let Some(path_str) = file {
+        fs::read_to_string(&path_str)?
+    } else {
+        let mut buf = String::new();
+        io::stdin().read_to_string(&mut buf)?;
+        if buf.trim().is_empty() {
+            println!("No input provided. Usage:");
+            println!("  lunar patch path/to/file.yaml");
+            println!("  cat patch.yaml | lunar patch");
+            return Ok(());
+        }
+        buf
+    };
+    apply_patch_yaml(&yaml_str)
 }

@@ -22,26 +22,60 @@ pub fn find_adapter(name: &str) -> Option<String> {
     None
 }
 
+/// [MODIFIED] Multi-Language Base Sniffer.
+/// If no Rust compiler is found, gracefully downgrade to write a dummy facts file instead of crashing.
 pub fn run_adapter() -> Result<Vec<RouteEntry>> {
     let project_dir = std::env::current_dir()?;
     let project_dir_str = project_dir.to_string_lossy().to_string();
-    let adapter_name = if project_dir.join("Cargo.toml").exists() { "lunar-extract-rust" }
-    else { anyhow::bail!("Could not detect project language. Currently supported: Rust (Cargo.toml found)."); };
-    let adapter_path = find_adapter(adapter_name).ok_or_else(|| anyhow::anyhow!("Adapter '{}' not found in PATH.", adapter_name))?;
-    let mut child = Command::new(&adapter_path).arg(&project_dir_str).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-    let timeout = Duration::from_secs(30);
-    match child.wait_timeout(timeout)? {
-        Some(status) if status.success() => {
-            let mut stdout = String::new();
-            child.stdout.take().unwrap().read_to_string(&mut stdout)?;
-            parse_routes(&stdout)
+    
+    // Sniff main files on disk to determine workspace language
+    let has_cargo = project_dir.join("Cargo.toml").exists();
+    let has_python = project_dir.join("requirements.txt").exists() 
+        || project_dir.join("pyproject.toml").exists() 
+        || project_dir.join("Pipfile").exists();
+    let has_go = project_dir.join("go.mod").exists();
+    let has_node = project_dir.join("package.json").exists();
+    let has_nginx = project_dir.join("nginx.conf").exists();
+
+    if has_cargo {
+        let adapter_name = "lunar-extract-rust";
+        let adapter_path = find_adapter(adapter_name)
+            .ok_or_else(|| anyhow::anyhow!("Adapter '{}' not found in PATH.", adapter_name))?;
+        
+        let mut child = Command::new(&adapter_path).arg(&project_dir_str).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let timeout = Duration::from_secs(30);
+        match child.wait_timeout(timeout)? {
+            Some(status) if status.success() => {
+                let mut stdout = String::new();
+                child.stdout.take().unwrap().read_to_string(&mut stdout)?;
+                parse_routes(&stdout)
+            }
+            Some(_) => {
+                let mut stderr = String::new();
+                child.stderr.take().unwrap().read_to_string(&mut stderr)?;
+                anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
+            }
+            None => { child.kill()?; child.wait()?; anyhow::bail!("Adapter '{}' timed out after 30 seconds", adapter_name); }
         }
-        Some(_) => {
-            let mut stderr = String::new();
-            child.stderr.take().unwrap().read_to_string(&mut stderr)?;
-            anyhow::bail!("Adapter '{}' failed: {}", adapter_name, stderr);
-        }
-        None => { child.kill()?; child.wait()?; anyhow::bail!("Adapter '{}' timed out after 30 seconds", adapter_name); }
+    } else if has_python || has_go || has_node || has_nginx {
+        let lang = if has_python { "Python" } else if has_go { "Go" } else if has_node { "Node.js" } else { "Nginx" };
+        println!("⚠️  Main language detected: {}. AST adapter is not yet compiled or installed in PATH.", lang);
+        println!("👉 LunarAST will automatically downgrade to 'Self-Growing Intent-Only mode' for this workspace.");
+        
+        // Write a dummy facts file so scan succeeds and map can register this directory!
+        let actual = serde_json::json!({
+            "exposed": [],
+            "consumed": [],
+            "projectType": lang.to_lowercase()
+        });
+        let output_path = Path::new(".lunar").join(".interfaces-autogen.json");
+        std::fs::create_dir_all(".lunar")?;
+        std::fs::write(&output_path, serde_json::to_string_pretty(&actual)?)?;
+        
+        // Return empty list so CLI scan doesn't crash
+        Ok(vec![])
+    } else {
+        anyhow::bail!("Could not detect project language. Expected standard project files (Cargo.toml, requirements.txt, go.mod, etc.)");
     }
 }
 
