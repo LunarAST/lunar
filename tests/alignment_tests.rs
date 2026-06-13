@@ -1,4 +1,4 @@
-use lunar::{RouteEntry, compare_routes, DiffResult};
+use lunar_interface::{RouteEntry, compare_routes, DiffResult};
 use serde_json;
 use std::fs;
 

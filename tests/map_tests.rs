@@ -1,4 +1,4 @@
-use lunar::{ActualJson, generate_lunar_map};
+use lunar_interface::{ActualJson, generate_lunar_map};
 use std::collections::HashMap;
 use std::fs;
 
@@ -15,7 +15,8 @@ fn test_generate_lunar_map_basic() {
     map.insert("auth-service".to_string(), auth_actual);
     map.insert("user-service".to_string(), user_actual);
 
-    let lunar_map = generate_lunar_map(&map, &HashMap::new());
+    // [FIXED v3.0] Pass 4 arguments to align with the upgraded core topography engine signature
+    let lunar_map = generate_lunar_map(&map, &HashMap::new(), &HashMap::new(), &HashMap::new());
 
     // Check projects
     assert_eq!(lunar_map.projects.len(), 2);
