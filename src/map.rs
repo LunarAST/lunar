@@ -47,6 +47,7 @@ pub async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, 
 
     let mut project_actuals = HashMap::new();
     let mut project_paths = HashMap::new();
+    let mut project_hashes = HashMap::new(); // [ADDED v3.0] Track project hashes
     for (name, path_str) in &config.projects {
         let actual_content = fs::read_to_string(path_str)?;
         let mut actual: ActualJson = serde_json::from_str(&actual_content)?;
@@ -66,8 +67,12 @@ pub async fn map(config_path: Option<&str>, output: Option<&str>, upload: bool, 
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".to_string());
         project_paths.insert(name.clone(), workspace_path);
+        
+        // [ADDED v3.0] Placeholder hashes mapping to satisfy 3.0 interface signature
+        project_hashes.insert(name.clone(), HashMap::new());
     }
-    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new(), &project_paths);
+    // [MODIFIED v3.0] Ingest 4 arguments to align with the upgraded core topography engine signature
+    let lunar_map = generate_lunar_map(&project_actuals, &HashMap::new(), &project_paths, &project_hashes);
     let output_json = serde_json::to_string_pretty(&lunar_map)?;
 
     let output_path = if let Some(out_path) = output {
