@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 use crate::guide;
-use crate::commands::{scan, diff, sync, pull, serve, setup_totp};
+use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_visibility};
 use crate::map::map;
 use crate::doctor::doctor_check;
 
@@ -155,7 +155,6 @@ pub async fn run() -> ExitCode {
         let port: u16 = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string()).parse().unwrap_or(8787);
         let domain_str = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
 
-        // TOTP status check
         let totp_configured = std::path::Path::new(".lunar/totp.secret").exists();
         let totp_line = if totp_configured {
             "🔐 TOTP: Configured ✅"
@@ -180,7 +179,6 @@ pub async fn run() -> ExitCode {
         println!("  Status: {}", state.status_summary());
         println!();
 
-        // Uninitialized project
         if !state.initialized {
             println!("  [1] Initialize project (lunar init)");
             println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
@@ -209,7 +207,6 @@ pub async fn run() -> ExitCode {
             continue;
         }
 
-        // Quick Actions
         println!("✨ Quick Actions (most common)");
         if !state.has_data {
             println!("  [1] 🔄 Scan project");
@@ -231,6 +228,9 @@ pub async fn run() -> ExitCode {
             println!("  [7] 🩺 Run health check");
             println!("  [8] 🔑 Generate Ed25519 keypair");
             println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
+            println!("  [L] 🔒 Lock all (quick private)");
+            println!("  [V] 🌐 Visibility Manager (fine control)");
+            println!("  [S] 🔄 Sync visibility from GitHub");
         }
 
         println!();
@@ -250,17 +250,35 @@ pub async fn run() -> ExitCode {
         if input == "q" {
             return ExitCode::from(0);
         }
-
         if input == "h" {
-            continue; // Reprint menu
+            continue;
         }
-
         if input == "c" {
             println!("This will permanently delete all cloud data. Run 'lunar ci144 --yes' manually if you're sure.");
             continue;
         }
+        if input == "l" {
+            println!("\nLocking all projects...\n");
+            if let Err(e) = visibility::lock_all_quick().await {
+                eprintln!("Error: {}", e);
+            }
+            continue;
+        }
+        if input == "v" {
+            println!("\nOpening Visibility Manager...\n");
+            if let Err(e) = visibility::run_interactive().await {
+                eprintln!("Error: {}", e);
+            }
+            continue;
+        }
+        if input == "s" {
+            println!("\nSyncing visibility from GitHub...\n");
+            if let Err(e) = sync_visibility::run().await {
+                eprintln!("Error: {}", e);
+            }
+            continue;
+        }
 
-        // Parse numeric choice
         let choice: u32 = match input.parse() {
             Ok(n) => n,
             _ => {
@@ -269,7 +287,6 @@ pub async fn run() -> ExitCode {
             }
         };
 
-        // Route to command based on state and choice
         let result = if !state.has_data {
             match choice {
                 1 => scan::execute(),

@@ -4,6 +4,8 @@ pub mod sync;
 pub mod pull;
 pub mod serve;
 pub mod interactive;
-pub mod setup_totp; // [ADDED] TOTP setup command
+pub mod setup_totp;
+pub mod visibility;
+pub mod sync_visibility;
 pub mod gen;
 pub mod ci144;
