@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use lunar::commands::{scan, diff, sync, pull, serve, interactive, gen};
+use lunar::commands::{scan, diff, sync, pull, serve, interactive, gen, ci144};
 use lunar::{
     doctor::doctor_check,
     cleanup::{cleanup_local, cleanup_archives},
@@ -33,8 +33,13 @@ enum Commands {
     },
     Serve,
     Gen {
-        #[command(subcommand)] // [FIXED] Changed #[arg] attribute to #[command] for nested subcommands parsing
+        #[command(subcommand)]
         target: GenTarget,
+    },
+    #[command(name = "ci-144")]
+    Ci144 {
+        #[command(subcommand)]
+        sub: Ci144Subcommands, // [ADDED] CI-144 Bridge and Hash consistency management command
     },
     Map {
         #[arg(short = 'c', long)]
@@ -86,6 +91,16 @@ pub enum GenTarget {
     },
 }
 
+#[derive(Subcommand, Clone)]
+pub enum Ci144Subcommands {
+    Check {
+        #[arg(long)]
+        quiet: bool,
+    },
+    Test,
+    Clean,
+}
+
 fn current_dir_project_name() -> String {
     std::env::current_dir()
         .ok()
@@ -108,7 +123,14 @@ async fn main() -> ExitCode {
     let result = match command {
         Commands::Scan => scan::execute(),
         Commands::Diff => diff::execute(),
-        Commands::Sync { apply, dry_run } => sync::execute(apply, dry_run),
+        Commands::Sync { apply, dry_run } => {
+            let res = sync::execute(apply, dry_run);
+            // [ADDED v3.0] Section 5.3: Auto-trigger a quiet hash check immediately after sync merges
+            if res.is_ok() && apply {
+                let _ = ci144::execute_check(true).await;
+            }
+            res
+        }
         Commands::Pull { project, yes } => pull::execute(project, yes).await,
         Commands::Serve => serve::execute(),
         Commands::Gen { target } => match target {
@@ -117,8 +139,21 @@ async fn main() -> ExitCode {
                 gen::execute_ci144(prompt, &lang, &out_dir).await
             }
         },
+        Commands::Ci144 { sub } => match sub {
+            Ci144Subcommands::Check { quiet } => ci144::execute_check(quiet).await,
+            Ci144Subcommands::Test => ci144::execute_test().await,
+            Ci144Subcommands::Clean => {
+                let _ = ci144::execute_clean();
+                Ok(())
+            }
+        },
         Commands::Map { config, output, upload, bucket, yes } => {
-            lunar::map::map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await
+            let res = lunar::map::map(config.as_deref(), output.as_deref(), upload, bucket.as_deref(), yes).await;
+            // [ADDED v3.0] Section 5.3: Auto-trigger a quiet hash check immediately after map compiles
+            if res.is_ok() {
+                let _ = ci144::execute_check(true).await;
+            }
+            res
         }
         Commands::Doctor => { return doctor_check(); }
         Commands::Cleanup { all: _, yes, archive, days } => {

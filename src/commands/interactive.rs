@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 use crate::guide;
-use crate::commands::{scan, diff, sync, pull, serve};
+use crate::commands::{scan, diff, sync, pull, serve, setup_totp};
 use crate::map::map;
 use crate::doctor::doctor_check;
 
@@ -154,30 +154,36 @@ pub async fn run() -> ExitCode {
         
         let port: u16 = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string()).parse().unwrap_or(8787);
         let domain_str = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
-        
+
+        // TOTP status check
+        let totp_configured = std::path::Path::new(".lunar/totp.secret").exists();
+        let totp_line = if totp_configured {
+            "🔐 TOTP: Configured ✅"
+        } else {
+            "🔐 TOTP: NOT configured ⚠️"
+        };
+
         println!();
         println!("🌙 LunarAST — Ecosystem Contract Governance");
         println!();
-        println!("  Project: {}", state.project_name);
-        println!("  Detected: {} {}", state.language, if let Some(ref b) = state.branch {
-            format!("| Git branch: {}", b)
-        } else {
-            String::new()
-        });
-        
-        println!("  Active Port: {}", port);
-        println!("  Active Domain: {}", domain_str);
-        println!("  Workspace Root: {}", std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "unknown".to_string()));
+        println!("────────────────────────────────────────────────────────────");
+        println!("  📋 Project: {}", state.project_name);
+        println!("  🌿 Language: {} {}",
+            state.language,
+            if let Some(ref b) = state.branch { format!("| Branch: {}", b) } else { String::new() }
+        );
+        println!("  🌐 Domain: {}", domain_str);
+        println!("  📂 Workspace: {}", std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "unknown".to_string()));
+        println!("  ⚙️  Active Port: {}", port);
+        println!("  {}", totp_line);
+        println!("────────────────────────────────────────────────────────────");
         println!("  Status: {}", state.status_summary());
         println!();
 
-        let mut options: Vec<(&str, &str)> = Vec::new();
-        let mut index = 1usize;
-
+        // Uninitialized project
         if !state.initialized {
-            println!("  This project hasn't been initialized yet.");
-            println!();
             println!("  [1] Initialize project (lunar init)");
+            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
             println!("  [q] Quit");
             print!("\n  Your choice: ");
             io::stdout().flush().ok();
@@ -191,29 +197,48 @@ pub async fn run() -> ExitCode {
                         eprintln!("Error: {}", e);
                     }
                 }
+                "0" => {
+                    println!("\nRunning TOTP setup...\n");
+                    if let Err(e) = setup_totp::run().await {
+                        eprintln!("Error: {}", e);
+                    }
+                }
                 "q" => return ExitCode::from(0),
                 _ => println!("Invalid choice."),
             }
             continue;
         }
 
+        // Quick Actions
+        println!("✨ Quick Actions (most common)");
         if !state.has_data {
-            options.push(("Scan project", "lunar scan"));
-            options.push(("Health check", "lunar doctor"));
+            println!("  [1] 🔄 Scan project");
+            println!("  [2] 🩺 Run health check");
         } else {
-            options.push(("Scan project (re-extract)", "lunar scan"));
-            options.push(("Show changes", "lunar diff"));
-            options.push(("Sync contracts", "lunar sync --apply"));
-            options.push(("Pull AI contract patch (lunar pull)", "lunar pull"));
-            options.push(("Launch serving daemon (lunar serve)", "lunar serve"));
-            options.push(("Generate topology", "lunar map"));
-            options.push(("Health check", "lunar doctor"));
+            println!("  [1] 🔄 Scan project (re-extract)");
+            println!("  [2] 📊 Show changes");
+            println!("  [3] 🔗 Sync contracts");
+            println!("  [4] 📥 Pull AI patch");
+            println!("  [5] 🚀 Launch local server");
+            println!("  [6] 🌍 Generate topology map");
         }
 
-        for (desc, _cmd) in &options {
-            println!("  [{}] {}", index, desc);
-            index += 1;
+        println!();
+        println!("🔧 Advanced / Utility");
+        if !state.has_data {
+            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
+        } else {
+            println!("  [7] 🩺 Run health check");
+            println!("  [8] 🔑 Generate Ed25519 keypair");
+            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
         }
+
+        println!();
+        println!("⚠️  Dangerous Operations");
+        println!("  [c] 🗑️  Clean all S3/R2 data (requires --yes)");
+        println!();
+        println!("❓ Help & Exit");
+        println!("  [h] Show this help again");
         println!("  [q] Quit");
 
         print!("\n  Your choice: ");
@@ -226,29 +251,45 @@ pub async fn run() -> ExitCode {
             return ExitCode::from(0);
         }
 
-        let choice: usize = match input.parse() {
-            Ok(n) if n >= 1 && n <= options.len() => n,
+        if input == "h" {
+            continue; // Reprint menu
+        }
+
+        if input == "c" {
+            println!("This will permanently delete all cloud data. Run 'lunar ci144 --yes' manually if you're sure.");
+            continue;
+        }
+
+        // Parse numeric choice
+        let choice: u32 = match input.parse() {
+            Ok(n) => n,
             _ => {
                 println!("Invalid choice.");
                 continue;
             }
         };
 
-        let (_desc, cmd_str) = options[choice - 1];
-
-        println!("\nRunning {}...\n", cmd_str);
-
-        let result = match cmd_str {
-            "lunar scan" => scan::execute(),
-            "lunar diff" => diff::execute(),
-            "lunar sync --apply" => sync::execute(true, false),
-            "lunar pull" => pull::execute(None, false).await,
-            "lunar serve" => serve::execute(),
-            "lunar map" => {
-                map(None, None, false, None, false).await
+        // Route to command based on state and choice
+        let result = if !state.has_data {
+            match choice {
+                1 => scan::execute(),
+                2 => { doctor_check(); Ok(()) },
+                0 => { setup_totp::run().await.map(|_| ()) },
+                _ => { println!("Invalid choice."); Ok(()) }
             }
-            "lunar doctor" => { doctor_check(); Ok(()) }
-            _ => Ok(()),
+        } else {
+            match choice {
+                1 => scan::execute(),
+                2 => diff::execute(),
+                3 => sync::execute(true, false),
+                4 => pull::execute(None, false).await,
+                5 => serve::execute(),
+                6 => map(None, None, false, None, false).await,
+                7 => { doctor_check(); Ok(()) },
+                8 => crate::keygen::generate_keypair(&state.project_name),
+                0 => { setup_totp::run().await.map(|_| ()) },
+                _ => { println!("Invalid choice."); Ok(()) }
+            }
         };
 
         if let Err(e) = result {

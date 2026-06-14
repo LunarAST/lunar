@@ -19,3 +19,6 @@ hex = "0.4"
 dirs = "5"
 rust-s3 = "0.37"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net", "time", "process", "signal"] }
+totp-lite = "2.0"
+data-encoding = "2.6"
+qrcode = "0.14"
