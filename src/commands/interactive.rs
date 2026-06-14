@@ -1,27 +1,9 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 use crate::guide;
-use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_visibility};
+use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility};
 use crate::map::map;
 use crate::doctor::doctor_check;
-
-async fn lunar_init() -> anyhow::Result<()> {
-    let interfaces_path = std::path::Path::new(".lunar").join("interfaces.yml");
-    if interfaces_path.exists() {
-        println!("interfaces.yml already exists.");
-        return Ok(());
-    }
-    std::fs::create_dir_all(".lunar")?;
-    let initial_yaml = r#"# LunarAST Project Interface Contract
-# This file is owned and maintained by humans.
-project: ""
-type: mixed
-environment: production
-"#;
-    std::fs::write(&interfaces_path, initial_yaml)?;
-    println!("✓ Created .lunar/interfaces.yml");
-    Ok(())
-}
 
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
@@ -73,216 +55,90 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     }
 
     if let (Some(project_name), Some(patch_str), Some(base_path)) = (pending_project, pending_patch, target_path) {
-        println!("🌙 LunarAST — Ecosystem Contract Governance");
-        println!();
-        println!("  🔔 Detected pending AI patch for project '{}' (already reviewed via web)", project_name);
-        print!("     → Auto-merge and refresh map? [Y/n]: ");
+        println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
+        println!("  🔔 Detected pending AI patch for project '{}'", project_name);
+        print!("     Auto-merge and refresh map? [Y/n]: ");
         io::stdout().flush()?;
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        let trimmed = input.trim().to_lowercase();
-
-        if trimmed.is_empty() || trimmed == "y" || trimmed == "yes" {
-            println!("📡 Automated GitOps: Merging contract patch...");
-            
+        if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
+            println!("📡 Merging contract patch...");
             crate::patch::apply_patch_yaml_at(&base_path, &patch_str, true)?;
-            
-            let todo_path = base_path.join(".lunar/ai-todo.json");
-            let archive_dir = base_path.join(".lunar/access-logs");
-            if let Ok(todo_content) = std::fs::read_to_string(&todo_path) {
-                if let Ok(mut todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
-                    let mut archived_tasks = Vec::new();
-                    if let Some(tasks) = todo_json.get_mut("tasks").and_then(|t| t.as_array_mut()) {
-                        let mut i = 0;
-                        while i < tasks.len() {
-                            let status = tasks[i].get("status").and_then(|s| s.as_str()).unwrap_or("");
-                            if status == "pending_alignment" || status == "pending" {
-                                let mut task = tasks.remove(i);
-                                task["status"] = serde_json::json!("completed");
-                                archived_tasks.push(task);
-                            } else {
-                                i += 1;
-                            }
-                        }
-                    }
-                    
-                    if let Ok(formatted) = serde_json::to_string_pretty(&todo_json) {
-                        let _ = std::fs::write(&todo_path, formatted);
-                    }
-
-                    if !archived_tasks.is_empty() {
-                        let _ = std::fs::create_dir_all(&archive_dir);
-                        let archive_path = archive_dir.join("ai-todo-archive.jsonl");
-                        if let Ok(mut archive_file) = std::fs::OpenOptions::new().create(true).append(true).open(archive_path) {
-                            for task in archived_tasks {
-                                let archive_entry = serde_json::json!({
-                                    "task": task,
-                                    "archivedAt": chrono::Utc::now().to_rfc3339(),
-                                    "status": "applied"
-                                });
-                                if let Ok(line) = serde_json::to_string(&archive_entry) {
-                                    use std::io::Write as IoWrite;
-                                    let _ = writeln!(archive_file, "{}", line);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            println!("📡 Automated GitOps: Re-compiling the global topography map...");
-            if let Err(e) = map(None, None, false, None, true).await {
-                eprintln!("Error regenerating map: {}", e);
-            }
-            
-            println!("\n✓ All contract changes cleanly aligned and map refreshed! [Press Enter to continue]");
-            let mut _dummy = String::new();
-            let _ = io::stdin().read_line(&mut _dummy);
+            println!("📡 Re-compiling topography map...");
+            map(None, None, false, None, true).await?;
+            println!("✓ All contract changes aligned and map refreshed.\n");
         }
     }
     Ok(())
 }
 
+fn print_menu(state: &guide::AnalyzeState) {
+    let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
+    let totp = if std::path::Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };
+    let scan = if state.has_data { "🟢 Scanned" } else { "🟡 No data" };
+
+    print!("\x1b[2J\x1b[H"); // clear screen, cursor home
+    println!("🌙 LunarAST — Ecosystem Contract Governance");
+    println!("{}", "─".repeat(60));
+    println!("📋 {}  |  🌿 {}  |  {}  |  🔐 TOTP {}  |  🌐 {}",
+        state.project_name,
+        state.language,
+        scan,
+        totp,
+        domain
+    );
+    println!("{}", "─".repeat(60));
+
+    if !state.has_data {
+        println!(" 1) Scan project");
+        println!(" 7) 🩺 Health check");
+        println!(" 9) 🔐 TOTP Setup");
+        println!(" h) Help   q) Quit");
+    } else {
+        println!(" 1) Scan project          2) Show changes");
+        println!(" 3) Sync contracts        4) Pull AI patch");
+        println!(" 5) Launch server         6) Generate map");
+        println!(" 7) 🩺 Health check       8) 🔑 Generate keypair");
+        println!(" 9) 🔐 TOTP Setup         10) 🌐 Visibility Manager");
+        println!(" 11) 🗑️  Clean all S3/R2 data");
+        println!(" h) Help   q) Quit");
+    }
+    println!("{}", "─".repeat(60));
+}
+
 pub async fn run() -> ExitCode {
     if let Err(e) = auto_probe_and_merge().await {
-        eprintln!("Warning in auto-probe: {}", e);
+        eprintln!("Warning: {}", e);
     }
 
+    let state = guide::analyze();
+    print_menu(&state);
+
     loop {
-        let state = guide::analyze();
-        
-        let port: u16 = std::env::var("LUNAR_SERVE_PORT").unwrap_or_else(|_| "8787".to_string()).parse().unwrap_or(8787);
-        let domain_str = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
-
-        let totp_configured = std::path::Path::new(".lunar/totp.secret").exists();
-        let totp_line = if totp_configured {
-            "🔐 TOTP: Configured ✅"
-        } else {
-            "🔐 TOTP: NOT configured ⚠️"
-        };
-
-        println!();
-        println!("🌙 LunarAST — Ecosystem Contract Governance");
-        println!();
-        println!("────────────────────────────────────────────────────────────");
-        println!("  📋 Project: {}", state.project_name);
-        println!("  🌿 Language: {} {}",
-            state.language,
-            if let Some(ref b) = state.branch { format!("| Branch: {}", b) } else { String::new() }
-        );
-        println!("  🌐 Domain: {}", domain_str);
-        println!("  📂 Workspace: {}", std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| "unknown".to_string()));
-        println!("  ⚙️  Active Port: {}", port);
-        println!("  {}", totp_line);
-        println!("────────────────────────────────────────────────────────────");
-        println!("  Status: {}", state.status_summary());
-        println!();
-
-        if !state.initialized {
-            println!("  [1] Initialize project (lunar init)");
-            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
-            println!("  [q] Quit");
-            print!("\n  Your choice: ");
-            io::stdout().flush().ok();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).ok();
-            let input = input.trim().to_lowercase();
-            match input.as_str() {
-                "1" => {
-                    println!("\nRunning lunar init...\n");
-                    if let Err(e) = lunar_init().await {
-                        eprintln!("Error: {}", e);
-                    }
-                }
-                "0" => {
-                    println!("\nRunning TOTP setup...\n");
-                    if let Err(e) = setup_totp::run().await {
-                        eprintln!("Error: {}", e);
-                    }
-                }
-                "q" => return ExitCode::from(0),
-                _ => println!("Invalid choice."),
-            }
-            continue;
-        }
-
-        println!("✨ Quick Actions (most common)");
-        if !state.has_data {
-            println!("  [1] 🔄 Scan project");
-            println!("  [2] 🩺 Run health check");
-        } else {
-            println!("  [1] 🔄 Scan project (re-extract)");
-            println!("  [2] 📊 Show changes");
-            println!("  [3] 🔗 Sync contracts");
-            println!("  [4] 📥 Pull AI patch");
-            println!("  [5] 🚀 Launch local server");
-            println!("  [6] 🌍 Generate topology map");
-        }
-
-        println!();
-        println!("🔧 Advanced / Utility");
-        if !state.has_data {
-            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
-        } else {
-            println!("  [7] 🩺 Run health check");
-            println!("  [8] 🔑 Generate Ed25519 keypair");
-            println!("  [0] 🔐 Setup TOTP (bind authenticator app)");
-            println!("  [L] 🔒 Lock all (quick private)");
-            println!("  [V] 🌐 Visibility Manager (fine control)");
-            println!("  [S] 🔄 Sync visibility from GitHub");
-        }
-
-        println!();
-        println!("⚠️  Dangerous Operations");
-        println!("  [c] 🗑️  Clean all S3/R2 data (requires --yes)");
-        println!();
-        println!("❓ Help & Exit");
-        println!("  [h] Show this help again");
-        println!("  [q] Quit");
-
-        print!("\n  Your choice: ");
+        print!("→ ");
         io::stdout().flush().ok();
         let mut input = String::new();
         io::stdin().read_line(&mut input).ok();
         let input = input.trim().to_lowercase();
 
+        if input.is_empty() {
+            continue;
+        }
+
         if input == "q" {
             return ExitCode::from(0);
         }
         if input == "h" {
-            continue;
-        }
-        if input == "c" {
-            println!("This will permanently delete all cloud data. Run 'lunar ci144 --yes' manually if you're sure.");
-            continue;
-        }
-        if input == "l" {
-            println!("\nLocking all projects...\n");
-            if let Err(e) = visibility::lock_all_quick().await {
-                eprintln!("Error: {}", e);
-            }
-            continue;
-        }
-        if input == "v" {
-            println!("\nOpening Visibility Manager...\n");
-            if let Err(e) = visibility::run_interactive().await {
-                eprintln!("Error: {}", e);
-            }
-            continue;
-        }
-        if input == "s" {
-            println!("\nSyncing visibility from GitHub...\n");
-            if let Err(e) = sync_visibility::run().await {
-                eprintln!("Error: {}", e);
-            }
+            print_menu(&state);
             continue;
         }
 
+        // Parse numeric choice
         let choice: u32 = match input.parse() {
             Ok(n) => n,
-            _ => {
-                println!("Invalid choice.");
+            Err(_) => {
+                println!("Unknown command. Press h for help.");
                 continue;
             }
         };
@@ -290,9 +146,9 @@ pub async fn run() -> ExitCode {
         let result = if !state.has_data {
             match choice {
                 1 => scan::execute(),
-                2 => { doctor_check(); Ok(()) },
-                0 => { setup_totp::run().await.map(|_| ()) },
-                _ => { println!("Invalid choice."); Ok(()) }
+                7 => { doctor_check(); Ok(()) },
+                9 => { setup_totp::run().await.map(|_| ()) },
+                _ => { println!("Invalid option."); Ok(()) }
             }
         } else {
             match choice {
@@ -304,13 +160,17 @@ pub async fn run() -> ExitCode {
                 6 => map(None, None, false, None, false).await,
                 7 => { doctor_check(); Ok(()) },
                 8 => crate::keygen::generate_keypair(&state.project_name),
-                0 => { setup_totp::run().await.map(|_| ()) },
-                _ => { println!("Invalid choice."); Ok(()) }
+                9 => { setup_totp::run().await.map(|_| ()) },
+                10 => { visibility::run_interactive().await.map(|_| ()) },
+                11 => { println!("Run 'lunar ci144 --yes' manually if you're sure."); Ok(()) },
+                _ => { println!("Invalid option."); Ok(()) }
             }
         };
 
         if let Err(e) = result {
             eprintln!("Error: {}", e);
         }
+        // After operation, re-print menu automatically to restore UI
+        print_menu(&state);
     }
 }

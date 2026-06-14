@@ -20,8 +20,62 @@ fn save_repos(config: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Ensure all projects from lunar-map.json exist in repos.json
+fn fill_missing_from_map(config: &mut Value) {
+    // Try to load lunar-map.json
+    if !std::path::Path::new("lunar-map.json").exists() {
+        return;
+    }
+    let map_content = match fs::read_to_string("lunar-map.json") {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let map: Value = match serde_json::from_str(&map_content) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let projects = match config
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+    {
+        Some(p) => p,
+        None => return,
+    };
+
+    let map_projects = match map.get("projects").and_then(|p| p.as_array()) {
+        Some(p) => p,
+        None => return,
+    };
+
+    for map_proj in map_projects {
+        let name = match map_proj.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Check if this project already exists in repos.json
+        let exists = projects.iter().any(|p| p.get("name").and_then(|n| n.as_str()) == Some(name));
+        if !exists {
+            let path = map_proj
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("");
+            let entry = serde_json::json!({
+                "name": name,
+                "visibility": "public",
+                "path": path
+            });
+            projects.push(entry);
+        }
+    }
+}
+
 pub fn set_all(visibility: &str) -> anyhow::Result<()> {
     let mut config = load_repos()?;
+
+    // Fill missing projects from lunar-map.json
+    fill_missing_from_map(&mut config);
+
     let projects = config
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
@@ -38,6 +92,8 @@ pub fn set_all(visibility: &str) -> anyhow::Result<()> {
 
 pub fn toggle_one(project_name: &str) -> anyhow::Result<()> {
     let mut config = load_repos()?;
+    fill_missing_from_map(&mut config); // also fill before toggling
+
     let projects = config
         .get_mut("projects")
         .and_then(|p| p.as_array_mut())
