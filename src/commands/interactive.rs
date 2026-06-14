@@ -73,13 +73,12 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn print_menu(state: &guide::AnalyzeState) {
+fn print_header(state: &guide::AnalyzeState) {
     let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
     let totp = if std::path::Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };
     let scan = if state.has_data { "🟢 Scanned" } else { "🟡 No data" };
 
-    print!("\x1b[2J\x1b[H"); // clear screen, cursor home
-    println!("🌙 LunarAST — Ecosystem Contract Governance");
+    println!("\n🌙 LunarAST — Ecosystem Contract Governance");
     println!("{}", "─".repeat(60));
     println!("📋 {}  |  🌿 {}  |  {}  |  🔐 TOTP {}  |  🌐 {}",
         state.project_name,
@@ -89,21 +88,46 @@ fn print_menu(state: &guide::AnalyzeState) {
         domain
     );
     println!("{}", "─".repeat(60));
+}
 
+fn print_main_menu(state: &guide::AnalyzeState) {
+    print_header(state);
+    if !state.has_data {
+        println!(" 1) Core Operations (scan, health...)");
+        println!(" 2) Security (TOTP setup)");
+        println!(" 0) Quit");
+    } else {
+        println!(" 1) Core Operations");
+        println!(" 2) Security");
+        println!(" 3) Danger (clean all data)");
+        println!(" 0) Quit");
+    }
+    println!("{}", "─".repeat(60));
+}
+
+fn print_core_menu(state: &guide::AnalyzeState) {
+    print_header(state);
     if !state.has_data {
         println!(" 1) Scan project");
-        println!(" 7) 🩺 Health check");
-        println!(" 9) 🔐 TOTP Setup");
-        println!(" h) Help   q) Quit");
+        println!(" 7) Health check");
+        println!(" 0) Back");
     } else {
-        println!(" 1) Scan project          2) Show changes");
-        println!(" 3) Sync contracts        4) Pull AI patch");
-        println!(" 5) Launch server         6) Generate map");
-        println!(" 7) 🩺 Health check       8) 🔑 Generate keypair");
-        println!(" 9) 🔐 TOTP Setup         10) 🌐 Visibility Manager");
-        println!(" 11) 🗑️  Clean all S3/R2 data");
-        println!(" h) Help   q) Quit");
+        println!(" 1) Scan project         2) Show changes");
+        println!(" 3) Sync contracts       4) Pull AI patch");
+        println!(" 5) Launch server        6) Generate map");
+        println!(" 7) Health check         0) Back");
     }
+    println!("{}", "─".repeat(60));
+}
+
+fn print_security_menu(state: &guide::AnalyzeState) {
+    print_header(state);
+    println!(" 1) TOTP Setup");
+    if state.has_data {
+        println!(" 2) Visibility Manager");
+        println!(" 3) Generate keypair");
+    }
+    println!(" 0) Back");
     println!("{}", "─".repeat(60));
 }
 
@@ -113,7 +137,7 @@ pub async fn run() -> ExitCode {
     }
 
     let state = guide::analyze();
-    print_menu(&state);
+    print_main_menu(&state);
 
     loop {
         print!("→ ");
@@ -122,23 +146,54 @@ pub async fn run() -> ExitCode {
         io::stdin().read_line(&mut input).ok();
         let input = input.trim().to_lowercase();
 
-        if input.is_empty() {
-            continue;
+        match input.as_str() {
+            "0" | "q" => return ExitCode::from(0),
+            "1" => core_submenu().await,
+            "2" => security_submenu().await,
+            "3" => {
+                let state = guide::analyze(); // re-evaluate for danger option availability
+                if state.has_data {
+                    println!("Run 'lunar ci144 --yes' manually if you're sure.");
+                } else {
+                    println!("Invalid option.");
+                }
+                print_main_menu(&state);
+            }
+            "h" => {
+                let state = guide::analyze();
+                print_main_menu(&state);
+            }
+            _ => {
+                println!("Invalid option. Enter 0-3, or h for help.");
+            }
         }
+    }
+}
 
-        if input == "q" {
-            return ExitCode::from(0);
+async fn core_submenu() {
+    loop {
+        let state = guide::analyze(); // 【关键修复】每次循环重新获取状态
+        print_core_menu(&state);
+        
+        print!("→ ");
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        let input = input.trim().to_lowercase();
+
+        if input == "0" {
+            let state = guide::analyze();
+            print_main_menu(&state);
+            return;
         }
         if input == "h" {
-            print_menu(&state);
-            continue;
+            continue; // reprint menu by looping
         }
 
-        // Parse numeric choice
         let choice: u32 = match input.parse() {
             Ok(n) => n,
             Err(_) => {
-                println!("Unknown command. Press h for help.");
+                println!("Invalid option. Enter a number, h for help, 0 to go back.");
                 continue;
             }
         };
@@ -147,7 +202,6 @@ pub async fn run() -> ExitCode {
             match choice {
                 1 => scan::execute(),
                 7 => { doctor_check(); Ok(()) },
-                9 => { setup_totp::run().await.map(|_| ()) },
                 _ => { println!("Invalid option."); Ok(()) }
             }
         } else {
@@ -159,10 +213,6 @@ pub async fn run() -> ExitCode {
                 5 => serve::execute(),
                 6 => map(None, None, false, None, false).await,
                 7 => { doctor_check(); Ok(()) },
-                8 => crate::keygen::generate_keypair(&state.project_name),
-                9 => { setup_totp::run().await.map(|_| ()) },
-                10 => { visibility::run_interactive().await.map(|_| ()) },
-                11 => { println!("Run 'lunar ci144 --yes' manually if you're sure."); Ok(()) },
                 _ => { println!("Invalid option."); Ok(()) }
             }
         };
@@ -170,7 +220,59 @@ pub async fn run() -> ExitCode {
         if let Err(e) = result {
             eprintln!("Error: {}", e);
         }
-        // After operation, re-print menu automatically to restore UI
-        print_menu(&state);
+        // Do not reprint menu; user sees output and can continue immediately
+    }
+}
+
+async fn security_submenu() {
+    loop {
+        let state = guide::analyze(); // 【关键修复】每次循环重新获取状态
+        print_security_menu(&state);
+        
+        print!("→ ");
+        io::stdout().flush().ok();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).ok();
+        let input = input.trim().to_lowercase();
+
+        if input == "0" {
+            let state = guide::analyze();
+            print_main_menu(&state);
+            return;
+        }
+        if input == "h" {
+            continue;
+        }
+
+        let choice: u32 = match input.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                println!("Invalid option. Enter a number, h for help, 0 to go back.");
+                continue;
+            }
+        };
+
+        let result = match choice {
+            1 => { setup_totp::run().await.map(|_| ()) },
+            2 => {
+                if state.has_data {
+                    visibility::run_interactive().await.map(|_| ())
+                } else {
+                    println!("No project data yet."); Ok(())
+                }
+            },
+            3 => {
+                if state.has_data {
+                    crate::keygen::generate_keypair(&state.project_name)
+                } else {
+                    println!("No project data yet."); Ok(())
+                }
+            },
+            _ => { println!("Invalid option."); Ok(()) }
+        };
+
+        if let Err(e) = result {
+            eprintln!("Error: {}", e);
+        }
     }
 }
