@@ -1,0 +1,30 @@
+{
+  "projects": [
+    {
+      "name": "helix-mind",
+      "path": "/opt/helix-mind",
+      "visibility": "public"
+    },
+    {
+      "name": "cellrix",
+      "path": "/opt/cellrix",
+      "visibility": "public"
+    },
+    {
+      "name": "LunarAST",
+      "path": "/opt/LunarAST",
+      "visibility": "public"
+    },
+    {
+      "name": "Helix-Callosum",
+      "path": "/opt/Helix-Callosum",
+      "visibility": "public"
+    },
+    {
+      "name": "anaphase-helix",
+      "path": "/opt/anaphase-helix",
+      "visibility": "public"
+    }
+  ],
+  "version": "0.5.0"
+}

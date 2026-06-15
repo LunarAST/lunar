@@ -5,11 +5,18 @@ use rand::rngs::OsRng;
 use rand::RngCore;
 use totp_lite;
 
-fn verify_current_totp(code: &str, secret: &str) -> bool {
+/// Verify a TOTP code against a Base32-encoded secret (with ±30s window)
+fn verify_current_totp(code: &str, secret_b32: &str) -> bool {
+    let secret_b32_upper = secret_b32.trim().to_uppercase();
+    let secret_bytes = match data_encoding::BASE32_NOPAD.decode(secret_b32_upper.as_bytes()) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
     let now = chrono::Utc::now().timestamp() as u64;
     for offset in [-1i64, 0, 1].iter() {
         let t = (now as i64 + offset * 30) as u64;
-        let expected = totp_lite::totp::<totp_lite::Sha1>(secret.as_bytes(), t);
+        // Force 6-digit output
+        let expected = totp_lite::totp_custom::<totp_lite::Sha1>(30, 6, &secret_bytes, t);
         if expected == code {
             return true;
         }
