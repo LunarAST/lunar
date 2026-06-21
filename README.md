@@ -22,7 +22,12 @@ lunar/
     │   ├── diff.rs       # Contract diff diagnostics
     │   ├── sync.rs       # Local manual merge logic
     │   ├── pull.rs       # Non-interactive secure TCP todo pull & merge
-    │   └── serve.rs      # Local serving daemon spawner
+    │   ├── serve.rs      # Local serving daemon spawner
+    │   ├── interactive.rs   # State-driven interactive menu
+    │   ├── setup_totp.rs    # TOTP secret generation with QR code
+    │   ├── visibility.rs    # Project visibility manager (lock/unlock/toggle)
+    │   ├── sync_visibility.rs # GitHub API visibility sync
+    │   └── sync_repos.rs      # Git metadata extraction for repos.json
     ├── map.rs            # Topography mapping & auto path discovery
     ├── cleanup.rs        # Local garbage & archive purging
     ├── doctor.rs         # Environment and consistency check-up
@@ -51,6 +56,7 @@ lunar
 * **Active Port**: Loaded from configuration or `LUNAR_SERVE_PORT` (defaults to `8787` with interactive confirmation).
 * **Active Domain**: Resolves to your primary server address (e.g., `https://lunar.aifify.com` or local fallback).
 * **Workspace Root**: Your current terminal physical path.
+* **TOTP Status**: Shows whether the two-factor authentication secret is configured.
 
 #### 🔔 Active Context-Aware Auto-Probe:
 Upon boot, the CLI automatically scans the global `lunar-map.json` and probes all active project todo lists. If a pending contract patch is discovered, it bypasses the menu and displays an eye-catching alert:
@@ -63,6 +69,45 @@ Upon boot, the CLI automatically scans the global `lunar-map.json` and probes al
 Press **Enter**! The CLI automatically pulls the patch, verifies its **Ed25519 cryptographic signature**, merges it into your local `interfaces.yml`, backs up your old file, marks the task as completed, and automatically compiles the map. 
 
 Your public `lunar-scope` canvas is instantly updated in 0.5 seconds!
+
+---
+
+## 🆕 v3.0 Security & Automation Extensions
+
+### 1. Identity Setup (`setup-totp`)
+```bash
+lunar setup-totp
+```
+Generates a Base32 TOTP secret and displays an ASCII QR code for binding to your authenticator app (Google Authenticator, Authy, etc.). The secret is stored in `.lunar/totp.secret` with `600` permissions. If a secret already exists, the command requires the current TOTP code before allowing rotation.
+
+### 2. Visibility Manager (`visibility`)
+```bash
+lunar visibility
+```
+Interactive submenu to:
+- **Lock all** – set all projects to private
+- **Unlock all** – set all projects to public
+- **Toggle one** – flip visibility for a specific project
+- **Sync from GitHub** – pull visibility status via GitHub API (requires `GITHUB_TOKEN`)
+
+### 3. Repository Metadata Sync (`sync-repos`)
+```bash
+lunar sync-repos
+```
+Reads `lunar-map.json` to discover all project paths, then extracts **GitHub owner, repository name, and current branch** from each project's local `.git` config. Results are written to `repos.json`, enabling automatic branch correction when generating LCT tokens.
+
+### 4. Server Process Management (Interactive Menu)
+Inside the interactive menu (after scan data is available):
+- Press `5` to **start** `lunar-serve`
+- Press `8` to **stop** the running server (sends `SIGTERM` via PID file)
+- Press `9` to **restart** the server
+
+No more manual `pkill -f lunar-serve`.
+
+### 5. New Environment Variables
+- `GITHUB_TOKEN` – Personal access token for syncing visibility from GitHub (optional)
+- `LUNAR_SERVE_PORT` – Override default serve port (8787)
+- `LUNAR_SERVE_DOMAIN` – Public domain used in token URLs (e.g., `https://lunar.aifify.com`)
 
 ---
 

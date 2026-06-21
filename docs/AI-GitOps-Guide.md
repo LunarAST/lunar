@@ -1,94 +1,109 @@
-# 🌙 LunarAST AI-GitOps Operations & Alignment Protocol
+# 🌙 LunarAST AI-GitOps: Zero-Trust Collaborative Development
 
-This manual governs the zero-friction, cryptographic, decentralized collaboration loop between **Human Developers** and **Autonomous AI Agents** using the LunarAST ecosystem.
-
----
-
-## 🏛️ 1. Architectural Foundation & Truth Models
-
-LunarAST implements a **Three-Tier Source-of-Truth Model** to govern interface contract state transitions without runtime monitoring or performance overhead:
-
-1. **Physical Facts (`.interfaces-autogen.json`)**: Raw route metadata extracted automatically from code syntax trees. This file is excluded via `.gitignore`.
-2. **Intent Overlay (`interfaces.yml`)**: Human-maintained, Git-tracked developer intent overrides. It is protected by the **Partial Field Override** algorithm, which safely merges AI-generated fields into intent configurations without altering manual human annotations or comments.
-3. **Escape Hatch**: Inline directive comments (`// lunar:consume`) placed above complex dynamic runtime calls that cannot be captured by static AST parsers.
+This guide describes how **human developers** and **autonomous AI agents** collaborate within the LunarAST ecosystem under a zero-trust, zero-memorization, and auditable security model.
 
 ---
 
-## 🧭 2. Human Local Workspace Loop (Zero-Friction CLI UX)
+## 🏛️ 1. Three-Tier Truth Source Architecture
 
-LunarAST CLI provides simplified, Codex-inspired workflow commands. Every time you modify your code locally on the VPS/PC, just run:
+LunarAST uses three progressive layers to align microservice network contracts:
 
-```bash
-lunar
-```
-
-Typing `lunar` without arguments initiates the **Interactive Menu**. It displays critical boot-screen parameters in real-time:
-* **Active Port**: Dynamically loaded from configuration or `LUNAR_SERVE_PORT` (defaults to `8787` with interactive confirmation).
-* **Active Domain**: Resolves to your primary server address (e.g., `https://lunar.aifify.com` or local fallback).
-* **Workspace Root**: Your current terminal physical path.
-
-### Central Operations in the Menu:
-*   `[1] Scan project`: Extracts raw physical facts.
-*   `[5] Launch serving daemon`: Spawns the decoupled `lunar-serve` backend to host the web canvas and API routes.
-*   `[6] Generate topology`: Compiles `lunar-map.json`. It automatically auto-detects absolute workspace directory paths (e.g., `/opt/cellrix`) and embeds them into the map, eliminating manual path mapping.
+1. **Physical Fact (`.interfaces-autogen.json`)** – Auto-extracted API facts from ASTs. **Must be gitignored.**
+2. **Intent Overlay (`interfaces.yml`)** – Human-maintained, version-controlled manual overrides.
+3. **Escape Hatch** – Magic comments (`// lunar:consume`) for dynamic dependencies invisible to static analysis.
 
 ---
 
-## 🤖 3. Bootstrapping AI Agents (Case-Insensitive Normalization)
+## 🧭 2. Human Local Workflow (Zero-Memory CLI)
 
-When starting a conversation with any external AI Agent (e.g., GPT-4o, Claude 3.5), simply provide them your project’s `/tree` URL:
-👉 `https://lunar.aifify.com/Jasonmilk/cellrix/tree/rs2`
+Run `lunar` without arguments to enter the **guided interactive menu**. It shows your current workspace status, domain, and active port.
 
-The server automatically maps the request. To prevent URL casing friction, the gateway normalizes all coordinate lookups to **lowercase** (`jasonmilk/cellrix/rs2`).
-
----
-
-## 🛠️ 4. AI On-Demand Exploration & Self-Growing Contracts
-
-Once the AI Agent accesses the `/tree` endpoint, it instantly gains **holistic visual capabilities** and begins executing the following GitOps loop:
-
-### Step 1: Read the System Instruction & File Tree
-The AI reads the response payload of `/tree/rs2`. The server dynamically prepends the **AI Agent System Instruction** (decoupled inside your repository as `.lunar/ai-instruction.md` to avoid hardcoding) at the very top of the page.
-*   **The AI learns**: It reads the `# Repository` comment headers embedded inside the file tree code block, instantly discovering how to read the project manual, use the `/raw` endpoints, and access the active todo handover lists.
-*   **The AI explores**: It browses the noise-filtered file tree at the bottom (with built-in ignore lists that completely hide `.pyc`, `.venv`, and `target` directories to save Tokens).
-
-### Step 2: Precise File Reading
-The AI does NOT guess paths. It uses the file tree to make precise, on-demand HTTP GET requests to read specific files:
-👉 `GET https://lunar.aifify.com/Jasonmilk/cellrix/raw/rs2/crates/cellrix-core/src/lib.rs`
-
-### Step 3: Contract Modification & Task Handover
-After implementing code features, the AI realizes a contract change is needed. It automatically generates a standard YAML contract patch, signs it cryptographically using its **Ed25519 Private Key**, and uploads it as a handover task via:
-👉 `POST https://lunar.aifify.com/api/v1/projects/cellrix/todo`
+**New in v3.0:**
+- `[0]` TOTP setup – bind your authenticator app via QR code.
+- `[V]` Visibility Manager – lock/unlock all projects, or toggle one.
+- `[R]` Sync repo info – automatically extract GitHub coordinates and branch from local `.git`.
+- Stop/restart the `lunar-serve` daemon directly from the menu.
 
 ---
 
-## 🔒 5. Human-in-the-Loop Audit & One-Click Merge
+## 🤖 3. Enabling AI to “See”: Lowercase-Normalized Routes
 
-To prevent unauthorized remote writes or AI hallucinations, the AI cannot directly edit your `interfaces.yml`. You maintain 100% control of the final merge:
+Feed the AI a URL like:
+`https://lunar.aifify.com/Jasonmilk/cellrix/tree/rs2`
 
-### Step 1: AI-on-AI Peer Reviewing
-Before merging, copy the URL of the comparative diff and feed it directly to another AI auditor (e.g., Claude):
-👉 `https://lunar.aifify.com/api/v1/projects/cellrix/todo/diff`
-The auditor AI inspects the side-by-side active contract vs. proposed patch and audits it for potential `MethodMismatch` or `Orphaned` regressions.
-
-### Step 2: One-Click Auto-Probe & Merge (The Codex UX)
-Go to your VPS terminal. You do not need to `cd` to the project directory or type complex parameters. Just run:
-```bash
-lunar
-```
-*   **Auto-Probe**: The CLI automatically scans your local map, discovers the pending todo patch, and prompts you directly on boot:
-    `🔔 Detected pending AI patch for project 'cellrix' (already reviewed via web)`
-    `→ Auto-merge and refresh map? [Y/n]: `
-*   **Action**: Press **Enter**! 
-    The CLI pulls the patch, verifies its **Ed25519 signature**, merges it into your local `interfaces.yml`, backs up your old file, marks the task as `completed` on the server, and automatically compiles the map!
-*   **Result**: Refresh `https://lunar.aifify.com/`. The project node’s Exposed ports are instantly lit on the 3D canvas!
+The gateway applies **lowercase normalization** to resolve the project regardless of casing mismatches.
 
 ---
 
-## 🛡️ 6. Zero-Trust Atomic Rollbacks
+## 🛠️ 4. AI On-Demand Discovery and Growth
 
-If any error occurs post-merge, you can restore your active branch to a 100% clean state in 1ms:
-*   **Option 1 (Ecosystem Backup Copy)**:
-    `cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -n 1) .lunar/interfaces.yml`
-*   **Option 2 (Git-Native Restore)**:
-    `git checkout .lunar/interfaces.yml`
+1. **Read the global AI instruction** – dynamically loaded from `config/ai-instruction.md` (common for all projects).
+2. **Browse the file tree** – filtered and auto-generated at the bottom of the page.
+3. **Fetch raw files on demand** – never guess paths; use `/raw/<branch>/<filepath>`.
+4. **Propose patches** – AI generates a YAML patch and returns it in a structured block (`---LUNAR_PATCH_START---`).
+
+---
+
+## 🔒 5. Human Dual-Gate Review & One-Click Merge
+
+AI **cannot** write or merge. All patches are submitted by the human via the **Web Dispatch Panel**:
+
+1. **Paste** the AI-generated patch into the panel on the website.
+2. **Enter the TOTP code** from your authenticator app (6 digits, 30-second window).
+3. The system stages the patch into `.lunar/suggestions/`.
+4. **Run `lunar`** on the VPS – it detects pending patches, asks for confirmation, merges atomically with signature verification and backup.
+
+### Cross-model Audit (AI-on-AI)
+Before merging, you can send the `/diff` endpoint to another AI for peer review.
+
+---
+
+## 🛡️ 6. Private Project Protection & LCT Tokens
+
+Projects can be marked as **private** in `repos.json`. Private projects are invisible without authentication.
+
+To grant read-only access to an AI (or anyone):
+
+1. **Login** to the web UI using your TOTP.
+2. Click on a project node, then click **"Generate AI Read-Only Link"**.
+3. A time-limited **LCT (LunarAST Cryptographic Token)** is created, signed with Ed25519.
+4. Give the URL to the AI. It can read the project's file tree and raw files for the specified duration, but cannot write or access other projects.
+
+LCT tokens are self-contained, resource-bound, and expire automatically.
+
+---
+
+## 🔄 7. Zero-Trust Atomic Rollback
+
+If a merge goes wrong:
+
+- **System backup**: `cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -1) .lunar/interfaces.yml`
+- **Git restore**: `git checkout .lunar/interfaces.yml`
+
+---
+
+## 🌐 8. Deployment Architecture
+
+- **lunar-serve** serves the React canvas and API.
+- **Nginx** (on a separate router or same machine) provides HTTPS termination, rate limiting, and log token redaction.
+- **Cloudflare** (optional) adds DDoS protection and edge caching.
+- **Environment variables**: `LUNAR_SERVE_DOMAIN` (e.g., `https://lunar.aifify.com`), `LUNAR_SERVE_PORT`.
+
+---
+
+## 📦 9. Reproducible Configuration
+
+`repos.json` stores project metadata (visibility, path, GitHub source). It can be regenerated by running `lunar` → `Core Operations` → `[R] Sync repo info`.
+
+---
+
+## 📋 10. Security Considerations
+
+- **TOTP** uses HMAC-SHA1 with Base32-encoded secrets, ±30s window, 6 digits.
+- **Session cookies** are HttpOnly, Secure, SameSite=Strict.
+- **CSRF tokens** protect state-changing endpoints.
+- **No default rate limiting** on the server – edge protection is delegated to Cloudflare.
+
+---
+
+*LunarAST v3.0 – Deterministic, auditable, zero-trust AI collaboration.*
