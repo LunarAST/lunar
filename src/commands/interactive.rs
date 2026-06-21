@@ -7,7 +7,7 @@ use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, syn
 use crate::map::map;
 use crate::doctor::doctor_check;
 
-// ── Strongly-typed JSON structures replacing chained Value calls ──
+// ── Strongly-typed JSON structures ──
 #[derive(Deserialize, Default)]
 struct TopographyMap {
     #[serde(default)]
@@ -36,7 +36,7 @@ struct AiTask {
     patch: Option<String>,
 }
 
-// ── Auto-probe & merge ──
+// ── Auto-probe & merge: now also scans suggestions directory ──
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
     if !Path::new(map_path).exists() {
@@ -45,7 +45,8 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_content = std::fs::read_to_string(map_path)?;
     let map_val: TopographyMap = serde_json::from_str(&map_content)?;
 
-    for proj in map_val.projects {
+    // 1. 传统方式：检查 ai-todo.json 中的待办任务
+    for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let base_path = Path::new(&proj.path);
         let todo_path = base_path.join(".lunar/ai-todo.json");
@@ -65,10 +66,9 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
             if is_pending && task.patch.as_deref().map_or(false, |p| !p.is_empty()) {
                 let patch_str = task.patch.unwrap();
                 println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
-                println!("  🔔 Detected pending AI patch for project '{}'", proj.name);
+                println!("  🔔 Detected pending AI patch for project '{}' (from handover board)", proj.name);
                 print!("     Auto-merge and refresh map? [Y/n]: ");
                 io::stdout().flush()?;
-
                 let mut input = String::new();
                 io::stdin().read_line(&mut input)?;
                 if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
@@ -82,6 +82,51 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
             }
         }
     }
+
+    // 2. 新增：扫描暂存区 suggestions 目录
+    for proj in &map_val.projects {
+        if proj.name.is_empty() || proj.path.is_empty() { continue; }
+        let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
+        if !suggest_dir.is_dir() { continue; }
+        let entries = match std::fs::read_dir(&suggest_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
+            let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+            // 跳过已应用的补丁
+            if filename.ends_with(".applied") { continue; }
+            // 发现未应用补丁
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if content.trim().is_empty() { continue; }
+            println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
+            println!("  🔔 Detected pending AI patch in suggestions: {}", filename);
+            println!("     Project: {}", proj.name);
+            print!("     Auto-merge and refresh map? [Y/n]: ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
+                println!("📡 Merging patch from suggestions...");
+                crate::patch::apply_patch_yaml_at(&Path::new(&proj.path), &content, true)?;
+                // 标记为已应用
+                let applied_name = format!("{}.applied", filename);
+                let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
+                println!("📡 Re-compiling topography map...");
+                map(None, None, false, None, true).await?;
+                println!("✓ Patch applied and map refreshed.\n");
+            } else {
+                println!("Skipped.");
+            }
+            return Ok(());
+        }
+    }
+
     Ok(())
 }
 
