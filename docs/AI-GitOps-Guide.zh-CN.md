@@ -1,94 +1,96 @@
-# 🌙 LunarAST AI-GitOps 极简操作与协同规范手册
+# 🌙 LunarAST AI-GitOps：零信任协同开发指南
 
-本手册指导人类开发人员与**自主 AI 代理（Autonomous AI Agent）**，如何基于 LunarAST 生态在零信任环境下，开展零命令记忆、零人工粘贴、安全、合规且支持原子化回滚的 AI 协同契约开发。
-
----
-
-## 🏛️ 1. 三级递进真理源架构
-
-LunarAST 引入以下**三级递进真理源**来对齐微服务群的网络契约事实，不引入任何运行期监控与性能损耗：
-
-1. **第一级：物理事实（`.interfaces-autogen.json`）**：由适配器从语法树中自动提取的 API 原始事实，此文件必须加入项目的 `.gitignore`。
-2. **第二级：意图覆盖层（`interfaces.yml`）**：由人类版本控制（Git）下的手动覆盖定义。对齐引擎在合并时执行 **“字段级部分覆盖（Partial Field Override）”** 算法，自动合并 AI 数据，100% 保留人类写过的任何自定义注释和属性。
-3. **第三级：末端逃生舱**：在源码行上方通过魔法单行注释（`// lunar:consume`）声明由于动态求值导致无法被 AST 静态分析捕获的边缘依赖。
+本文档介绍在 LunarAST 生态中，**人类开发者**与**自主AI智能体**如何基于零信任、无记忆留存、全可审计安全模型开展协同开发。
 
 ---
 
-## 🧭 2. 人类开发者本地操作流（极简 CLI 体验）
-
-为了消灭“记不住命令”的老旧痛点，`lunar` CLI 引入了高度直觉的参数看板和引导菜单。您在 VPS 或本地电脑的终端上只需运行：
-
-```bash
-lunar
-```
-
-不带任何参数启动 `lunar` 会直接进入**交互引导菜单**。它会在最顶部为您高亮展示当前的**“现役物理指标看板”**：
-* **Active Port**：常驻的只读服务端端口（默认 `8787`，支持环境变量 `LUNAR_SERVE_PORT` 覆盖与启动确认）。
-* **Active Domain**：现役公网主权域名（默认 `https://lunar.aifify.com`）。
-* **Workspace Root**：当前工作区的绝对物理路径。
-
-### 核心菜单操作：
-*   `[1] Scan project`：极速扫描并重新生成本地事实。
-*   `[5] Launch serving daemon`：自动在后台拉起解耦后的 `lunar-serve` 服务器。
-*   `[6] Generate topology`：重构并编译全局契约拓扑。它会自动在 VPS 硬盘上搜索子项目，将自动捕获出的**物理绝对路径（如 `/opt/cellrix`）** 注入到地图中，服务端以此实现零人工配置源码定位。
+## 🏛️ 一、三层可信数据源架构
+LunarAST 通过三层递进式数据结构统一管理微服务网络接口契约：
+1. **物理原始数据（`.interfaces-autogen.json`）** — 从代码抽象语法树自动提取的接口原始信息，**必须加入 git 忽略清单**。
+2. **意图覆盖层（`interfaces.yml`）** — 人工维护、纳入版本控制的手动修正配置。
+3. **逃逸注释标记** — 特殊注释（`// lunar:consume`），用于标记静态分析无法识别的动态依赖。
 
 ---
 
-## 🤖 3. 引导 AI 睁眼（大小写自适应归一化）
+## 🧭 二、开发者本地工作流（无记忆命令行工具）
+直接执行 `lunar` 不带参数，即可进入**交互式引导菜单**，展示当前工作区状态、业务域与占用端口。
 
-当您在网页端或 Chat 界面中与任何外部 AI 协同开发时，您只需向其投喂该项目的 `/tree` 契约地址：
-👉 `https://lunar.aifify.com/Jasonmilk/cellrix/tree/rs2`
-
-网关在接收到请求后，会自动执行**小写归一化（Lowercase Normalisation）哈希映射**（将 `Jasonmilk/cellrix/rs2` 转换对齐），彻底抹平大小写命名差异导致的分发断层。
-
----
-
-## 🛠️ 4. AI 在开发过程中的“按需获取与自我生长”
-
-AI 代理在读到 URL 后，将自动睁开双眼，并按照以下 GitOps 规范执行自组织循环：
-
-### 第一步：读取顶端引导词，看清目录树大纲
-AI 发起 GET 请求访问 `/tree/rs2`。`lunar-serve` 会首先检测并动态加载项目下的 `.lunar/ai-instruction.md` 提示词 [1.2]（如无，则降级使用默认模板，彻底避免硬编码），将其拼装在输出页面的**最顶端第一行**。
-*   **AI 学习准则**：AI 会直接读到文件树顶部由 `#` 开头的物理注释指引，瞬间无感学会如何读取 README、如何发起 `/raw` 原始代码拉取、以及如何更新 todo 待办。
-*   **AI 观察目录**：AI 浏览页面底部排好版、并且自动过滤了 `target`、`.pyc` 等临时/构建垃圾的极简目录树，瞬间在脑中形成工作区地貌。
-
-### 第二步：精准按需获取代码事实
-AI 不会盲猜。它会根据目录树，向指定文件发起精准的单点 raw 拉取：
-👉 `GET https://lunar.aifify.com/Jasonmilk/cellrix/raw/rs2/crates/cellrix-core/src/lib.rs`
-
-### 第三步：契约自我生长与任务交接
-AI 在重构完代码后，发现契约缺失。它自己逆向写好符合规范的 YAML 补丁，并使用它本地的 **AI 专属私钥**，对补丁内容进行 **Ed25519 数字签名**，最后 POST 推送上墙：
-👉 `POST https://lunar.aifify.com/api/v1/projects/cellrix/todo`
+### v3.0 新增功能
+- `[0]` TOTP 双因素认证配置 — 通过二维码绑定身份验证器App
+- `[V]` 可见性管理器 — 批量锁定/解锁全部项目，或单独切换单个项目权限
+- `[R]` 仓库信息同步 — 自动读取本地 `.git` 文件，提取 GitHub 仓库地址与分支信息
+- 菜单内可直接启停 `lunar-serve` 后台服务
 
 ---
 
-## 🔒 5. 人类双重门禁审核与一键对齐（Zero-Friction CD）
+## 🤖 三、开放AI读取权限：路径小写标准化
+提供给AI访问的地址示例：
+`https://lunar.your-domain.com/your-owner/cellrix/tree/rs2`
 
-为防范 AI 的胡言乱语与恶意注入，AI 绝对没有写权限。您在终端一秒完成终审与对齐：
-
-### 第一步：交叉模型同行审计（AI-on-AI 审计）
-您将看板生成的 comparative Markdown 差异地址，直接丢给另一个 AI 审计师（如 Claude 3.5）：
-👉 `https://lunar.aifify.com/api/v1/projects/cellrix/todo/diff`
-Claude 在云端直读此对比图，帮您把关是否有 `MethodMismatch` 或 `Orphaned` 风险。
-
-### 第二步：人类一键回车大对齐
-在 VPS 的任意绝对路径下，您直接打一个：
-```bash
-lunar
-```
-*   **自愈探针激活**：CLI 自动探测全局地图并发现 `cellrix` 存在待合并的 AI 补丁。主菜单不会加载，而是**直接在顶部弹出高亮提示**：
-    `🔔 Detected pending AI patch for project 'cellrix' (already reviewed via web)`
-    `→ Auto-merge and refresh map? [Y/n]: `
-*   **操作**：您直接按下 **回车（Enter）**！
-    CLI 自动拉取补丁、**执行 Ed25519 签名验证防伪**、原子化并入本地 `interfaces.yml`、写入旧文件备份、自动把看板上的任务标记为 `completed` 已完成、最后自动在后台编译地图！
-*   **结果**：刷新 `https://lunar.aifify.com/`，`cellrix` 节点的 Exposed 接口端口**瞬间优雅地点亮在大画布上**！
+网关会对访问路径执行**全小写标准化处理**，规避大小写不一致导致的读取失败问题。
 
 ---
 
-## 🛡️ 6. 零信任原子化回滚
+## 🛠️ 四、AI按需检索与增量迭代能力
+1. **读取全局AI规则文档** — 从 `config/ai-instruction.md` 动态加载通用指引（全项目共用）
+2. **浏览项目文件树** — 页面底部自动生成过滤后的目录结构
+3. **按需拉取原始源码** — 无需猜测文件路径，统一接口 `/raw/<分支名>/<文件路径>`
+4. **生成变更补丁** — AI 输出 YAML 格式补丁，包裹在固定标记块内（`---LUNAR_PATCH_START---`）
 
-如果您在合并后，发现 AI 的补丁有缺陷，想要撤销，可在项目目录下 1 毫秒瞬间物理还原：
-*   **第一级（系统备份还原）**：
-    `cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -n 1) .lunar/interfaces.yml`
-*   **第二级（Git 原生恢复）**：
-    `git checkout .lunar/interfaces.yml`
+---
+
+## 🔒 五、人类双关卡审核与一键合并
+AI **无写入、无合并权限**，所有补丁必须由开发者通过网页调度面板提交：
+1. 将AI生成的补丁粘贴至网页面板
+2. 输入身份验证器生成的6位TOTP验证码（有效期30秒）
+3. 系统将补丁暂存至 `.lunar/suggestions/` 目录
+4. 在服务器执行 `lunar` 命令，工具自动检测待处理补丁，二次确认后完成原子合并，附带签名校验与自动备份
+
+### 跨模型交叉审计（AI互审）
+合并前，可将接口 `/diff` 差异数据发送给另一大模型，实现AI间交叉评审。
+
+---
+
+## 🛡️ 六、私有项目隔离与LCT加密令牌
+在 `repos.json` 中可将项目标记为**私有**，未授权访问将完全隐藏项目内容。
+
+如需授予AI（或第三方）只读权限：
+1. 使用TOTP登录网页管理端
+2. 选中目标项目节点，点击「生成AI只读访问链接」
+3. 系统生成带时效的LCT（LunarAST加密令牌），基于Ed25519算法签名
+4. 将链接提供给AI，在有效期内仅允许读取文件树与源码，禁止写入、无法访问其他项目
+
+LCT令牌自带权限、资源绑定信息，到期自动失效。
+
+---
+
+## 🔄 七、零信任原子回滚方案
+合并操作出现异常时，两种回滚方式：
+- 系统备份恢复：`cp $(ls -t .lunar/.backup/interfaces.yml.bak.* | head -1) .lunar/interfaces.yml`
+- Git版本回退：`git checkout .lunar/interfaces.yml`
+
+---
+
+## 🌐 八、部署架构说明
+- **lunar-serve**：提供前端可视化画布与后端API服务
+- **Nginx**（独立网关或同机部署）：负责HTTPS证书终止、访问限流、日志敏感信息脱敏
+- **Cloudflare（可选）**：提供DDoS防护与边缘缓存加速
+- 环境变量：`LUNAR_SERVE_DOMAIN`（示例：`https://lunar.your-domain.com`）、`LUNAR_SERVE_PORT`
+
+---
+
+## 📦 九、可复现配置文件
+`repos.json` 存储全部项目元数据（可见性、本地路径、GitHub远程地址）。
+执行路径：运行 `lunar` → 核心操作 → `[R] 同步仓库信息`，即可自动重新生成该文件。
+
+---
+
+## 📋 十、安全设计要点
+- **TOTP**：基于HMAC-SHA1，密钥Base32编码，验证码6位，时间窗口±30秒
+- **会话Cookie**：开启HttpOnly、Secure、SameSite=Strict安全策略
+- **CSRF令牌**：所有修改数据接口强制校验防跨站令牌
+- **服务端无内置限流**：流量防护统一交由Cloudflare边缘节点处理
+
+---
+
+*LunarAST v3.0 — 可复现、全审计、零信任AI协同开发体系*
