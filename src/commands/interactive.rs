@@ -36,7 +36,17 @@ struct AiTask {
     patch: Option<String>,
 }
 
-// ── Auto-probe & merge: now also scans suggestions directory ──
+fn extract_patch_content(raw: &str) -> String {
+    if let Some(start) = raw.find("---CONTENT---") {
+        let after = &raw[start + "---CONTENT---".len()..];
+        if let Some(end) = after.find("---LUNAR_PATCH_END---") {
+            return after[..end].trim().to_string();
+        }
+        return after.trim().to_string();
+    }
+    raw.trim().to_string()
+}
+
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
     if !Path::new(map_path).exists() {
@@ -45,7 +55,7 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_content = std::fs::read_to_string(map_path)?;
     let map_val: TopographyMap = serde_json::from_str(&map_content)?;
 
-    // 1. 传统方式：检查 ai-todo.json 中的待办任务
+    // 1. ai-todo.json detection
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let base_path = Path::new(&proj.path);
@@ -73,17 +83,22 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                 io::stdin().read_line(&mut input)?;
                 if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
                     println!("📡 Merging contract patch...");
-                    crate::patch::apply_patch_yaml_at(&base_path, &patch_str, true)?;
-                    println!("📡 Re-compiling topography map...");
-                    map(None, None, false, None, true).await?;
-                    println!("✓ All contract changes aligned and map refreshed.\n");
+                    let cleaned = extract_patch_content(&patch_str);
+                    if let Err(e) = crate::patch::apply_patch_yaml_at(&base_path, &cleaned, true) {
+                        eprintln!("Merge failed: {}", e);
+                        eprintln!("The patch file has been left in place for manual review.");
+                    } else {
+                        println!("📡 Re-compiling topography map...");
+                        map(None, None, false, None, true).await?;
+                        println!("✓ All contract changes aligned and map refreshed.\n");
+                    }
                 }
                 return Ok(());
             }
         }
     }
 
-    // 2. 新增：扫描暂存区 suggestions 目录
+    // 2. suggestions directory detection
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
@@ -96,14 +111,14 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
             let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-            // 跳过已应用的补丁
-            if filename.ends_with(".applied") { continue; }
-            // 发现未应用补丁
+            if filename.ends_with(".applied") || filename.ends_with(".failed") { continue; }
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
             if content.trim().is_empty() { continue; }
+            let cleaned = extract_patch_content(&content);
+            if cleaned.is_empty() { continue; }
             println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
             println!("  🔔 Detected pending AI patch in suggestions: {}", filename);
             println!("     Project: {}", proj.name);
@@ -113,15 +128,23 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
             io::stdin().read_line(&mut input)?;
             if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
                 println!("📡 Merging patch from suggestions...");
-                crate::patch::apply_patch_yaml_at(&Path::new(&proj.path), &content, true)?;
-                // 标记为已应用
-                let applied_name = format!("{}.applied", filename);
-                let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
-                println!("📡 Re-compiling topography map...");
-                map(None, None, false, None, true).await?;
-                println!("✓ Patch applied and map refreshed.\n");
+                match crate::patch::apply_patch_yaml_at(&Path::new(&proj.path), &cleaned, true) {
+                    Ok(()) => {
+                        let applied_name = format!("{}.applied", filename);
+                        let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
+                        println!("📡 Re-compiling topography map...");
+                        map(None, None, false, None, true).await?;
+                        println!("✓ Patch applied and map refreshed.\n");
+                    }
+                    Err(e) => {
+                        eprintln!("Merge failed: {}", e);
+                        eprintln!("The patch has been marked as failed and will be skipped on next run.");
+                        let failed_name = format!("{}.failed", filename);
+                        let _ = std::fs::rename(&path, suggest_dir.join(failed_name));
+                    }
+                }
             } else {
-                println!("Skipped.");
+                println!("Skipped. Patch left in suggestions directory.");
             }
             return Ok(());
         }
@@ -187,7 +210,6 @@ fn print_security_menu(state: &guide::AnalyzeState) {
     println!("{}", "─".repeat(60));
 }
 
-// ── Platform-safe process termination ──
 #[cfg(unix)]
 fn stop_server() -> anyhow::Result<()> {
     let pid_path = ".lunar/lunar-serve.pid";
@@ -234,7 +256,6 @@ fn restart_server() -> anyhow::Result<()> {
     serve::execute()
 }
 
-// ── Main entry ──
 pub async fn run() -> ExitCode {
     if let Err(e) = auto_probe_and_merge().await {
         eprintln!("Warning: {}", e);
