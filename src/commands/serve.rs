@@ -28,10 +28,13 @@ pub fn execute() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Binary 'lunar-serve' not found in PATH. Ensure it is compiled and installed."))?;
         
     let map_path = "lunar-map.json";
+    // 读取当前域设置，传递给子进程
+    let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| String::new());
     
     let mut child = std::process::Command::new(binary_path)
         .arg(map_path)
         .env("LUNAR_SERVE_PORT", &port_str)
+        .env("LUNAR_SERVE_DOMAIN", &domain)
         .spawn()?;
         
     let status = child.wait()?;
