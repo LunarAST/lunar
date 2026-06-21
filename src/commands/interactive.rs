@@ -1,92 +1,100 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::path::Path;
+use serde::Deserialize;
 use crate::guide;
 use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_repos};
 use crate::map::map;
 use crate::doctor::doctor_check;
 
+// ── Strongly-typed JSON structures replacing chained Value calls ──
+#[derive(Deserialize, Default)]
+struct TopographyMap {
+    #[serde(default)]
+    projects: Vec<ProjectMeta>,
+}
+
+#[derive(Deserialize, Default)]
+struct ProjectMeta {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Deserialize, Default)]
+struct AiTodo {
+    #[serde(default)]
+    tasks: Vec<AiTask>,
+}
+
+#[derive(Deserialize, Default)]
+struct AiTask {
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
+// ── Auto-probe & merge ──
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
-    if !std::path::Path::new(map_path).exists() {
+    if !Path::new(map_path).exists() {
         return Ok(());
     }
-    
     let map_content = std::fs::read_to_string(map_path)?;
-    let map_val: serde_json::Value = serde_json::from_str(&map_content)?;
-    
-    let projects = match map_val.get("projects").and_then(|p| p.as_array()) {
-        Some(arr) => arr,
-        None => return Ok(()),
-    };
+    let map_val: TopographyMap = serde_json::from_str(&map_content)?;
 
-    let mut pending_project = None;
-    let mut pending_patch = None;
-    let mut target_path = None;
+    for proj in map_val.projects {
+        if proj.name.is_empty() || proj.path.is_empty() { continue; }
+        let base_path = Path::new(&proj.path);
+        let todo_path = base_path.join(".lunar/ai-todo.json");
+        if !todo_path.exists() { continue; }
 
-    for proj in projects {
-        let name = proj.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        let path_str = proj.get("path").and_then(|p| p.as_str()).unwrap_or("");
-        if name.is_empty() || path_str.is_empty() {
-            continue;
-        }
+        let todo_content = match std::fs::read_to_string(&todo_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let todo_json: AiTodo = match serde_json::from_str(&todo_content) {
+            Ok(j) => j,
+            Err(_) => continue,
+        };
 
-        let todo_path = std::path::Path::new(path_str).join(".lunar/ai-todo.json");
-        if todo_path.exists() {
-            if let Ok(todo_content) = std::fs::read_to_string(&todo_path) {
-                if let Ok(todo_json) = serde_json::from_str::<serde_json::Value>(&todo_content) {
-                    if let Some(tasks) = todo_json.get("tasks").and_then(|t| t.as_array()) {
-                        for task in tasks {
-                            let status = task.get("status").and_then(|s| s.as_str()).unwrap_or("");
-                            let patch = task.get("patch").and_then(|p| p.as_str()).unwrap_or("");
-                            if (status == "pending_alignment" || status == "pending") && !patch.is_empty() {
-                                pending_project = Some(name.to_string());
-                                pending_patch = Some(patch.to_string());
-                                target_path = Some(std::path::Path::new(path_str).to_path_buf());
-                                break;
-                            }
-                        }
-                    }
+        for task in todo_json.tasks {
+            let is_pending = task.status == "pending_alignment" || task.status == "pending";
+            if is_pending && task.patch.as_deref().map_or(false, |p| !p.is_empty()) {
+                let patch_str = task.patch.unwrap();
+                println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
+                println!("  🔔 Detected pending AI patch for project '{}'", proj.name);
+                print!("     Auto-merge and refresh map? [Y/n]: ");
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
+                    println!("📡 Merging contract patch...");
+                    crate::patch::apply_patch_yaml_at(&base_path, &patch_str, true)?;
+                    println!("📡 Re-compiling topography map...");
+                    map(None, None, false, None, true).await?;
+                    println!("✓ All contract changes aligned and map refreshed.\n");
                 }
+                return Ok(());
             }
-        }
-        if pending_project.is_some() {
-            break;
-        }
-    }
-
-    if let (Some(project_name), Some(patch_str), Some(base_path)) = (pending_project, pending_patch, target_path) {
-        println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
-        println!("  🔔 Detected pending AI patch for project '{}'", project_name);
-        print!("     Auto-merge and refresh map? [Y/n]: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
-            println!("📡 Merging contract patch...");
-            crate::patch::apply_patch_yaml_at(&base_path, &patch_str, true)?;
-            println!("📡 Re-compiling topography map...");
-            map(None, None, false, None, true).await?;
-            println!("✓ All contract changes aligned and map refreshed.\n");
         }
     }
     Ok(())
 }
 
+// ── UI helpers ──
 fn print_header(state: &guide::AnalyzeState) {
-    let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| "https://lunar.aifify.com".to_string());
-    let totp = if std::path::Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };
+    let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| String::from("(not set)"));
+    let totp = if Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };
     let scan = if state.has_data { "🟢 Scanned" } else { "🟡 No data" };
 
     println!("\n🌙 LunarAST — Ecosystem Contract Governance");
     println!("{}", "─".repeat(60));
     println!("📋 {}  |  🌿 {}  |  {}  |  🔐 TOTP {}  |  🌐 {}",
-        state.project_name,
-        state.language,
-        scan,
-        totp,
-        domain
-    );
+        state.project_name, state.language, scan, totp, domain);
     println!("{}", "─".repeat(60));
 }
 
@@ -134,22 +142,46 @@ fn print_security_menu(state: &guide::AnalyzeState) {
     println!("{}", "─".repeat(60));
 }
 
-// 进程管理辅助函数
+// ── Platform-safe process termination ──
+#[cfg(unix)]
 fn stop_server() -> anyhow::Result<()> {
     let pid_path = ".lunar/lunar-serve.pid";
-    if !std::path::Path::new(pid_path).exists() {
+    if !Path::new(pid_path).exists() {
         println!("Server is not running (PID file not found).");
         return Ok(());
     }
     let pid_str = std::fs::read_to_string(pid_path)?;
     let pid: u32 = pid_str.trim().parse()?;
-    // 发送 SIGTERM
-    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
-    // 等待进程结束（可选）
+    unsafe {
+        if libc::kill(pid as i32, libc::SIGTERM) != 0 {
+            return Err(anyhow::anyhow!("Failed to send SIGTERM to process {}", pid));
+        }
+    }
     std::thread::sleep(std::time::Duration::from_secs(1));
     let _ = std::fs::remove_file(pid_path);
     println!("Server (PID {}) has been stopped.", pid);
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn stop_server() -> anyhow::Result<()> {
+    let pid_path = ".lunar/lunar-serve.pid";
+    if !Path::new(pid_path).exists() {
+        println!("Server is not running (PID file not found).");
+        return Ok(());
+    }
+    let pid_str = std::fs::read_to_string(pid_path)?;
+    let pid: u32 = pid_str.trim().parse()?;
+    let status = std::process::Command::new("taskkill")
+        .args(&["/F", "/PID", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        println!("Server (PID {}) stopped.", pid);
+        let _ = std::fs::remove_file(pid_path);
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Failed to stop process {} on non-Unix platform", pid))
+    }
 }
 
 fn restart_server() -> anyhow::Result<()> {
@@ -157,15 +189,21 @@ fn restart_server() -> anyhow::Result<()> {
     serve::execute()
 }
 
+// ── Main entry ──
 pub async fn run() -> ExitCode {
     if let Err(e) = auto_probe_and_merge().await {
         eprintln!("Warning: {}", e);
     }
 
-    let state = guide::analyze();
-    print_main_menu(&state);
+    let mut state = guide::analyze();
+    let mut show_menu = true;
 
     loop {
+        if show_menu {
+            print_main_menu(&state);
+            show_menu = false;
+        }
+
         print!("→ ");
         io::stdout().flush().ok();
         let mut input = String::new();
@@ -174,140 +212,124 @@ pub async fn run() -> ExitCode {
 
         match input.as_str() {
             "0" | "q" => return ExitCode::from(0),
-            "1" => core_submenu().await,
-            "2" => security_submenu().await,
+            "1" => {
+                core_submenu().await;
+                state = guide::analyze();
+                show_menu = true;
+            }
+            "2" => {
+                security_submenu().await;
+                state = guide::analyze();
+                show_menu = true;
+            }
             "3" => {
-                let state = guide::analyze();
                 if state.has_data {
                     println!("Run 'lunar ci144 --yes' manually if you're sure.");
+                    println!("Press Enter to continue...");
+                    let mut _wait = String::new();
+                    io::stdin().read_line(&mut _wait).ok();
+                    show_menu = true;
                 } else {
-                    println!("Invalid option.");
+                    println!("Invalid option. Enter 0-3, or h for help.");
                 }
-                print_main_menu(&state);
             }
             "h" => {
-                let state = guide::analyze();
-                print_main_menu(&state);
+                state = guide::analyze();
+                show_menu = true;
             }
-            _ => {
-                println!("Invalid option. Enter 0-3, or h for help.");
-            }
+            _ => println!("Invalid option. Enter 0-3, or h for help."),
         }
     }
 }
 
 async fn core_submenu() {
+    let mut show_menu = true;
     loop {
         let state = guide::analyze();
-        print_core_menu(&state);
-        
+        if show_menu {
+            print_core_menu(&state);
+            show_menu = false;
+        }
+
         print!("→ ");
         io::stdout().flush().ok();
         let mut input = String::new();
         io::stdin().read_line(&mut input).ok();
         let input = input.trim().to_lowercase();
 
-        if input == "0" {
-            let state = guide::analyze();
-            print_main_menu(&state);
-            return;
-        }
-        if input == "h" {
-            continue;
-        }
+        if input == "0" { return; }
+        if input == "h" { show_menu = true; continue; }
 
-        // 处理字母命令
-        if input == "r" {
-            if let Err(e) = sync_repos::run().await {
+        let executed = match (state.has_data, input.as_str()) {
+            (false, "1") => Some(scan::execute()),
+            (false, "7") => { doctor_check(); Some(Ok(())) },
+            (false, "r") => Some(sync_repos::run().await.map(|_| ())),
+
+            (true, "1") => Some(scan::execute()),
+            (true, "2") => Some(diff::execute()),
+            (true, "3") => Some(sync::execute(true, false)),
+            (true, "4") => Some(pull::execute(None, false).await),
+            (true, "5") => Some(serve::execute()),
+            (true, "6") => Some(map(None, None, false, None, false).await),
+            (true, "7") => { doctor_check(); Some(Ok(())) },
+            (true, "8") => Some(stop_server()),
+            (true, "9") => Some(restart_server()),
+            (true, "r") => Some(sync_repos::run().await.map(|_| ())),
+
+            _ => {
+                println!("Invalid option. Enter a valid menu option.");
+                None
+            }
+        };
+
+        if let Some(result) = executed {
+            if let Err(e) = result {
                 eprintln!("Error: {}", e);
             }
-            continue;
-        }
-
-        let choice: u32 = match input.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                println!("Invalid option. Enter a number, R, h, or 0 to go back.");
-                continue;
-            }
-        };
-
-        let result = if !state.has_data {
-            match choice {
-                1 => scan::execute(),
-                7 => { doctor_check(); Ok(()) },
-                _ => { println!("Invalid option."); Ok(()) }
-            }
-        } else {
-            match choice {
-                1 => scan::execute(),
-                2 => diff::execute(),
-                3 => sync::execute(true, false),
-                4 => pull::execute(None, false).await,
-                5 => serve::execute(),
-                6 => map(None, None, false, None, false).await,
-                7 => { doctor_check(); Ok(()) },
-                8 => { stop_server().map_err(|e| anyhow::anyhow!(e)) },
-                9 => { restart_server().map_err(|e| anyhow::anyhow!(e)) },
-                _ => { println!("Invalid option."); Ok(()) }
-            }
-        };
-
-        if let Err(e) = result {
-            eprintln!("Error: {}", e);
+            println!("Press Enter to continue...");
+            let mut _wait = String::new();
+            io::stdin().read_line(&mut _wait).ok();
+            show_menu = true;
         }
     }
 }
 
 async fn security_submenu() {
+    let mut show_menu = true;
     loop {
         let state = guide::analyze();
-        print_security_menu(&state);
-        
+        if show_menu {
+            print_security_menu(&state);
+            show_menu = false;
+        }
+
         print!("→ ");
         io::stdout().flush().ok();
         let mut input = String::new();
         io::stdin().read_line(&mut input).ok();
         let input = input.trim().to_lowercase();
 
-        if input == "0" {
-            let state = guide::analyze();
-            print_main_menu(&state);
-            return;
-        }
-        if input == "h" {
-            continue;
-        }
+        if input == "0" { return; }
+        if input == "h" { show_menu = true; continue; }
 
-        let choice: u32 = match input.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                println!("Invalid option. Enter a number, h for help, 0 to go back.");
-                continue;
+        let executed = match (state.has_data, input.as_str()) {
+            (_, "1") => Some(setup_totp::run().await.map(|_| ())),
+            (true, "2") => Some(visibility::run_interactive().await.map(|_| ())),
+            (true, "3") => Some(crate::keygen::generate_keypair(&state.project_name)),
+            _ => {
+                println!("Invalid option. Enter a valid menu option.");
+                None
             }
         };
 
-        let result = match choice {
-            1 => { setup_totp::run().await.map(|_| ()) },
-            2 => {
-                if state.has_data {
-                    visibility::run_interactive().await.map(|_| ())
-                } else {
-                    println!("No project data yet."); Ok(())
-                }
-            },
-            3 => {
-                if state.has_data {
-                    crate::keygen::generate_keypair(&state.project_name)
-                } else {
-                    println!("No project data yet."); Ok(())
-                }
-            },
-            _ => { println!("Invalid option."); Ok(()) }
-        };
-
-        if let Err(e) = result {
-            eprintln!("Error: {}", e);
+        if let Some(result) = executed {
+            if let Err(e) = result {
+                eprintln!("Error: {}", e);
+            }
+            println!("Press Enter to continue...");
+            let mut _wait = String::new();
+            io::stdin().read_line(&mut _wait).ok();
+            show_menu = true;
         }
     }
 }
