@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 use crate::guide;
-use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility};
+use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_repos};
 use crate::map::map;
 use crate::doctor::doctor_check;
 
@@ -110,12 +110,15 @@ fn print_core_menu(state: &guide::AnalyzeState) {
     if !state.has_data {
         println!(" 1) Scan project");
         println!(" 7) Health check");
+        println!(" R) Sync repo info from Git");
         println!(" 0) Back");
     } else {
         println!(" 1) Scan project         2) Show changes");
         println!(" 3) Sync contracts       4) Pull AI patch");
         println!(" 5) Launch server        6) Generate map");
-        println!(" 7) Health check         0) Back");
+        println!(" 7) Health check         8) Stop server");
+        println!(" 9) Restart server       R) Sync repo info");
+        println!(" 0) Back");
     }
     println!("{}", "─".repeat(60));
 }
@@ -129,6 +132,29 @@ fn print_security_menu(state: &guide::AnalyzeState) {
     }
     println!(" 0) Back");
     println!("{}", "─".repeat(60));
+}
+
+// 进程管理辅助函数
+fn stop_server() -> anyhow::Result<()> {
+    let pid_path = ".lunar/lunar-serve.pid";
+    if !std::path::Path::new(pid_path).exists() {
+        println!("Server is not running (PID file not found).");
+        return Ok(());
+    }
+    let pid_str = std::fs::read_to_string(pid_path)?;
+    let pid: u32 = pid_str.trim().parse()?;
+    // 发送 SIGTERM
+    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+    // 等待进程结束（可选）
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let _ = std::fs::remove_file(pid_path);
+    println!("Server (PID {}) has been stopped.", pid);
+    Ok(())
+}
+
+fn restart_server() -> anyhow::Result<()> {
+    stop_server().ok();
+    serve::execute()
 }
 
 pub async fn run() -> ExitCode {
@@ -151,7 +177,7 @@ pub async fn run() -> ExitCode {
             "1" => core_submenu().await,
             "2" => security_submenu().await,
             "3" => {
-                let state = guide::analyze(); // re-evaluate for danger option availability
+                let state = guide::analyze();
                 if state.has_data {
                     println!("Run 'lunar ci144 --yes' manually if you're sure.");
                 } else {
@@ -172,7 +198,7 @@ pub async fn run() -> ExitCode {
 
 async fn core_submenu() {
     loop {
-        let state = guide::analyze(); // 【关键修复】每次循环重新获取状态
+        let state = guide::analyze();
         print_core_menu(&state);
         
         print!("→ ");
@@ -187,13 +213,21 @@ async fn core_submenu() {
             return;
         }
         if input == "h" {
-            continue; // reprint menu by looping
+            continue;
+        }
+
+        // 处理字母命令
+        if input == "r" {
+            if let Err(e) = sync_repos::run().await {
+                eprintln!("Error: {}", e);
+            }
+            continue;
         }
 
         let choice: u32 = match input.parse() {
             Ok(n) => n,
             Err(_) => {
-                println!("Invalid option. Enter a number, h for help, 0 to go back.");
+                println!("Invalid option. Enter a number, R, h, or 0 to go back.");
                 continue;
             }
         };
@@ -213,6 +247,8 @@ async fn core_submenu() {
                 5 => serve::execute(),
                 6 => map(None, None, false, None, false).await,
                 7 => { doctor_check(); Ok(()) },
+                8 => { stop_server().map_err(|e| anyhow::anyhow!(e)) },
+                9 => { restart_server().map_err(|e| anyhow::anyhow!(e)) },
                 _ => { println!("Invalid option."); Ok(()) }
             }
         };
@@ -220,13 +256,12 @@ async fn core_submenu() {
         if let Err(e) = result {
             eprintln!("Error: {}", e);
         }
-        // Do not reprint menu; user sees output and can continue immediately
     }
 }
 
 async fn security_submenu() {
     loop {
-        let state = guide::analyze(); // 【关键修复】每次循环重新获取状态
+        let state = guide::analyze();
         print_security_menu(&state);
         
         print!("→ ");
