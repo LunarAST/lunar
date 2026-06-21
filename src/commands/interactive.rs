@@ -7,7 +7,6 @@ use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, syn
 use crate::map::map;
 use crate::doctor::doctor_check;
 
-// ── Strongly-typed JSON structures ──
 #[derive(Deserialize, Default)]
 struct TopographyMap {
     #[serde(default)]
@@ -45,6 +44,18 @@ fn extract_patch_content(raw: &str) -> String {
         return after.trim().to_string();
     }
     raw.trim().to_string()
+}
+
+fn extract_project_name_from_yaml(yaml: &str) -> Option<String> {
+    for line in yaml.lines() {
+        if let Some(rest) = line.trim().strip_prefix("project:") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
@@ -88,11 +99,6 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                         eprintln!("Merge failed: {}", e);
                         eprintln!("The patch file has been left in place for manual review.");
                     } else {
-                        // Re-scan the project to apply intent overlay
-                        println!("📡 Re-scanning project to apply intent overlay...");
-                        if let Err(e) = scan::execute_at(&proj.name, &proj.path) {
-                            eprintln!("Scan warning: {}", e);
-                        }
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ All contract changes aligned and map refreshed.\n");
@@ -103,7 +109,7 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
         }
     }
 
-    // 2. suggestions directory detection
+    // 2. suggestions directory detection with project matching
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
@@ -124,23 +130,31 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
             if content.trim().is_empty() { continue; }
             let cleaned = extract_patch_content(&content);
             if cleaned.is_empty() { continue; }
+
+            let target_name = extract_project_name_from_yaml(&cleaned)
+                .unwrap_or_else(|| proj.name.clone());
+            let target_path = if target_name == proj.name {
+                proj.path.clone()
+            } else {
+                map_val.projects.iter()
+                    .find(|p| p.name == target_name)
+                    .map(|p| p.path.clone())
+                    .unwrap_or_else(|| proj.path.clone())
+            };
+
             println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
             println!("  🔔 Detected pending AI patch in suggestions: {}", filename);
-            println!("     Project: {}", proj.name);
+            println!("     Target project: {}", target_name);
             print!("     Auto-merge and refresh map? [Y/n]: ");
             io::stdout().flush()?;
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
             if input.trim().to_lowercase().starts_with('y') || input.trim().is_empty() {
                 println!("📡 Merging patch from suggestions...");
-                match crate::patch::apply_patch_yaml_at(&Path::new(&proj.path), &cleaned, true) {
+                match crate::patch::apply_patch_yaml_at(&Path::new(&target_path), &cleaned, true) {
                     Ok(()) => {
                         let applied_name = format!("{}.applied", filename);
                         let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
-                        println!("📡 Re-scanning project to apply intent overlay...");
-                        if let Err(e) = scan::execute_at(&proj.name, &proj.path) {
-                            eprintln!("Scan warning: {}", e);
-                        }
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ Patch applied and map refreshed.\n");
@@ -219,49 +233,66 @@ fn print_security_menu(state: &guide::AnalyzeState) {
     println!("{}", "─".repeat(60));
 }
 
-#[cfg(unix)]
 fn stop_server() -> anyhow::Result<()> {
     let pid_path = ".lunar/lunar-serve.pid";
-    if !Path::new(pid_path).exists() {
-        println!("Server is not running (PID file not found).");
-        return Ok(());
-    }
-    let pid_str = std::fs::read_to_string(pid_path)?;
-    let pid: u32 = pid_str.trim().parse()?;
-    unsafe {
-        if libc::kill(pid as i32, libc::SIGTERM) != 0 {
-            return Err(anyhow::anyhow!("Failed to send SIGTERM to process {}", pid));
+    let mut found = false;
+    if Path::new(pid_path).exists() {
+        let pid_str = std::fs::read_to_string(pid_path)?;
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            #[cfg(unix)]
+            {
+                unsafe {
+                    if libc::kill(pid, libc::SIGTERM) == 0 {
+                        found = true;
+                        println!("Sent SIGTERM to PID {}", pid);
+                    }
+                }
+            }
         }
     }
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    let _ = std::fs::remove_file(pid_path);
-    println!("Server (PID {}) has been stopped.", pid);
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn stop_server() -> anyhow::Result<()> {
-    let pid_path = ".lunar/lunar-serve.pid";
-    if !Path::new(pid_path).exists() {
-        println!("Server is not running (PID file not found).");
-        return Ok(());
+    if !found {
+        #[cfg(unix)]
+        {
+            let status = std::process::Command::new("pkill")
+                .args(["-f", "lunar-serve"])
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("Stopped lunar-serve via pkill.");
+                    found = true;
+                }
+                Ok(s) => {
+                    anyhow::bail!("pkill returned non-zero status: {}", s);
+                }
+                Err(e) => {
+                    anyhow::bail!("pkill command failed: {}. Ensure lunar-serve is running and you have permissions.", e);
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let status = std::process::Command::new("taskkill")
+                .args(["/F", "/IM", "lunar-serve.exe"])
+                .status();
+            if status.map_or(false, |s| s.success()) {
+                println!("Stopped lunar-serve via taskkill.");
+                found = true;
+            } else {
+                anyhow::bail!("taskkill failed. Ensure lunar-serve is running.");
+            }
+        }
     }
-    let pid_str = std::fs::read_to_string(pid_path)?;
-    let pid: u32 = pid_str.trim().parse()?;
-    let status = std::process::Command::new("taskkill")
-        .args(&["/F", "/PID", &pid.to_string()])
-        .status()?;
-    if status.success() {
-        println!("Server (PID {}) stopped.", pid);
+    if found {
         let _ = std::fs::remove_file(pid_path);
         Ok(())
     } else {
-        Err(anyhow::anyhow!("Failed to stop process {} on non-Unix platform", pid))
+        anyhow::bail!("Could not stop lunar-serve. Try manually: pkill -f lunar-serve")
     }
 }
 
 fn restart_server() -> anyhow::Result<()> {
     stop_server().ok();
+    std::thread::sleep(std::time::Duration::from_secs(2));
     serve::execute()
 }
 

@@ -16,16 +16,21 @@ pub fn execute() -> Result<()> {
     Ok(())
 }
 
-/// Scan a specific project by temporarily switching to its directory.
+/// Scan a specific project by spawning a subprocess in its directory.
 pub fn execute_at(name: &str, path: &str) -> Result<()> {
     let target = Path::new(path);
     if !target.exists() {
         anyhow::bail!("Project path does not exist: {}", path);
     }
-    let original_dir = std::env::current_dir()?;
-    std::env::set_current_dir(target)?;
     println!("Scanning project '{}' at {}...", name, path);
-    let result = execute();
-    std::env::set_current_dir(original_dir)?;
-    result
+    // Spawn `lunar scan` in the target directory
+    let status = std::process::Command::new("lunar")
+        .args(["scan"])
+        .current_dir(target)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("lunar scan exited with non-zero status")
+    }
 }
