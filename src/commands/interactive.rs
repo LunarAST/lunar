@@ -88,6 +88,11 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                         eprintln!("Merge failed: {}", e);
                         eprintln!("The patch file has been left in place for manual review.");
                     } else {
+                        // Re-scan the project to apply intent overlay
+                        println!("📡 Re-scanning project to apply intent overlay...");
+                        if let Err(e) = scan::execute_at(&proj.name, &proj.path) {
+                            eprintln!("Scan warning: {}", e);
+                        }
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ All contract changes aligned and map refreshed.\n");
@@ -132,6 +137,10 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                     Ok(()) => {
                         let applied_name = format!("{}.applied", filename);
                         let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
+                        println!("📡 Re-scanning project to apply intent overlay...");
+                        if let Err(e) = scan::execute_at(&proj.name, &proj.path) {
+                            eprintln!("Scan warning: {}", e);
+                        }
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ Patch applied and map refreshed.\n");
