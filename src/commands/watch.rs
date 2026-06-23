@@ -2,22 +2,13 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 use std::io::{self, Write};
-use serde::Deserialize;
+use crate::types::TopographyMap;
 
-#[derive(Deserialize, Default)]
-struct TopographyMap {
-    #[serde(default)]
-    projects: Vec<ProjectMeta>,
-}
-
-#[derive(Deserialize, Default)]
-struct ProjectMeta {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    path: String,
-}
-
+/// Start a background watcher that polls all project suggestion directories.
+/// When a new `.yaml` or `.yml` patch is discovered, a notification is printed
+/// and a `.diff` file is generated for human or peer‑AI review.
+///
+/// This function never exits on its own; press Ctrl+C to stop.
 pub async fn run() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
     if !Path::new(map_path).exists() {
@@ -28,37 +19,62 @@ pub async fn run() -> anyhow::Result<()> {
 
     println!("👀 Watching for new AI patches... (press Ctrl+C to stop)\n");
 
-    // Track known filenames per project to avoid re-notifying
+    // Track already‑seen files to avoid duplicate notifications
     let mut known_files: std::collections::HashMap<String, Vec<String>> = Default::default();
 
     loop {
         for proj in &map_val.projects {
-            if proj.name.is_empty() || proj.path.is_empty() { continue; }
+            if proj.name.is_empty() || proj.path.is_empty() {
+                continue;
+            }
             let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
-            if !suggest_dir.is_dir() { continue; }
+            if !suggest_dir.is_dir() {
+                continue;
+            }
+
             let entries = match fs::read_dir(&suggest_dir) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
+
             let mut current_files = Vec::new();
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
-                let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-                if filename.ends_with(".applied") || filename.ends_with(".failed") || filename.ends_with(".diff") {
+
+                // Accept both .yaml and .yml extensions
+                let ext = path.extension().and_then(|e| e.to_str());
+                if ext != Some("yaml") && ext != Some("yml") {
                     continue;
                 }
-                current_files.push(filename.to_string());
+
+                // Use lossy conversion to handle non‑UTF‑8 filenames gracefully
+                let filename = path
+                    .file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if filename.is_empty() {
+                    continue;
+                }
+
+                // Skip already‑processed or generated files
+                if filename.ends_with(".applied")
+                    || filename.ends_with(".failed")
+                    || filename.ends_with(".diff")
+                {
+                    continue;
+                }
+
+                current_files.push(filename.clone());
 
                 let known = known_files.entry(proj.name.clone()).or_default();
-                if !known.contains(&filename.to_string()) {
-                    // New patch found! Notify and generate diff.
+                if !known.contains(&filename) {
+                    // New patch detected – notify and generate diff
                     println!("🔔 New AI patch detected: {}", filename);
                     println!("   Project: {}", proj.name);
                     println!("   Path:    {:?}", path);
-                    // Generate diff by reading patch content and comparing with current interfaces
+
                     if let Ok(content) = fs::read_to_string(&path) {
-                        // Extract patch YAML (in case of LUNAR_PATCH format)
+                        // Extract the pure YAML portion even if the file is a LUNAR_PATCH block
                         let patch_yaml = if let Some(start) = content.find("---CONTENT---") {
                             let after = &content[start + "---CONTENT---".len()..];
                             if let Some(end) = after.find("---LUNAR_PATCH_END---") {
@@ -69,7 +85,7 @@ pub async fn run() -> anyhow::Result<()> {
                         } else {
                             content.clone()
                         };
-                        // Write diff summary to .diff file for human/peer AI review
+
                         let diff_path = suggest_dir.join(format!("{}.diff", filename));
                         let interfaces_path = Path::new(&proj.path).join(".lunar/interfaces.yml");
                         let current_yml = if interfaces_path.exists() {
@@ -77,19 +93,30 @@ pub async fn run() -> anyhow::Result<()> {
                         } else {
                             "(no existing interfaces.yml)".to_string()
                         };
-                        let diff_content = format!(
-                            "# AI Patch Review\n\n## Current interfaces.yml\n```yaml\n{}\n```\n\n## Proposed Patch\n```yaml\n{}\n```\n",
-                            current_yml, patch_yaml
-                        );
-                        fs::write(&diff_path, diff_content)?;
-                        println!("   Diff saved: {:?}", diff_path);
-                        println!("   Share the diff file with another AI for peer review.");
-                        println!();
+
+                        let mut diff_content = String::new();
+                        diff_content.push_str("# AI Patch Review\n\n");
+                        diff_content.push_str("## Current interfaces.yml\n```yaml\n");
+                        diff_content.push_str(&current_yml);
+                        diff_content.push_str("\n```\n\n## Proposed Patch\n```yaml\n");
+                        diff_content.push_str(&patch_yaml);
+                        diff_content.push_str("\n```\n");
+
+                        // Do NOT abort the watcher on write errors – just log a warning
+                        match fs::write(&diff_path, diff_content) {
+                            Ok(()) => {
+                                println!("   Diff saved: {:?}", diff_path);
+                                println!("   Share the diff file with another AI for peer review.\n");
+                            }
+                            Err(e) => {
+                                eprintln!("   ⚠️  Failed to write diff file for {}: {}\n", filename, e);
+                            }
+                        }
                     }
-                    known.push(filename.to_string());
+                    known.push(filename);
                 }
             }
-            // Update known files list (prune deleted files)
+            // Refresh known file list for this project (prune deleted files)
             *known_files.entry(proj.name.clone()).or_default() = current_files;
         }
         io::stdout().flush().ok();

@@ -1,26 +1,15 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::path::Path;
+use std::fs;
 use serde::Deserialize;
 use crate::guide;
 use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_repos, watch};
 use crate::map::map;
 use crate::doctor::doctor_check;
+use crate::types::TopographyMap;
 
-#[derive(Deserialize, Default)]
-struct TopographyMap {
-    #[serde(default)]
-    projects: Vec<ProjectMeta>,
-}
-
-#[derive(Deserialize, Default)]
-struct ProjectMeta {
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    path: String,
-}
-
+// ── Strongly‑typed structures for ai‑todo.json ──
 #[derive(Deserialize, Default)]
 struct AiTodo {
     #[serde(default)]
@@ -66,7 +55,7 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_content = std::fs::read_to_string(map_path)?;
     let map_val: TopographyMap = serde_json::from_str(&map_content)?;
 
-    // 1. ai-todo.json detection
+    // 1. ai‑todo.json detection
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let base_path = Path::new(&proj.path);
@@ -114,15 +103,21 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
         if !suggest_dir.is_dir() { continue; }
-        let entries = match std::fs::read_dir(&suggest_dir) {
+        let entries = match fs::read_dir(&suggest_dir) {
             Ok(e) => e,
             Err(_) => continue,
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("yaml") { continue; }
-            let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+
+            // Accept both .yaml and .yml extensions
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext != Some("yaml") && ext != Some("yml") { continue; }
+
+            let filename = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            if filename.is_empty() { continue; }
             if filename.ends_with(".applied") || filename.ends_with(".failed") { continue; }
+
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -176,7 +171,7 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── UI helpers ──
+// ── UI helpers (unchanged) ──
 fn print_header(state: &guide::AnalyzeState) {
     let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| String::from("(not set)"));
     let totp = if Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };

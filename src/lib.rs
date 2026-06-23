@@ -8,3 +8,4 @@ pub mod share;
 pub mod uploader;
 pub mod map;      // [ADDED] Register decoupled map module
 pub mod commands; // [ADDED] Register decoupled commands module
+pub mod types;
