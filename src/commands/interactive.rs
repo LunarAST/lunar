@@ -9,7 +9,6 @@ use crate::map::map;
 use crate::doctor::doctor_check;
 use crate::types::TopographyMap;
 
-// ── Strongly‑typed structures for ai‑todo.json ──
 #[derive(Deserialize, Default)]
 struct AiTodo {
     #[serde(default)]
@@ -47,22 +46,106 @@ fn extract_project_name_from_yaml(yaml: &str) -> Option<String> {
     None
 }
 
+/// Read the configured domain from environment or from the .lunar/domain file.
+fn get_domain() -> String {
+    if let Ok(domain) = std::env::var("LUNAR_SERVE_DOMAIN") {
+        return domain;
+    }
+    if let Ok(content) = fs::read_to_string(".lunar/domain") {
+        let trimmed = content.trim().to_string();
+        if !trimmed.is_empty() {
+            return trimmed;
+        }
+    }
+    String::new()
+}
+
+/// Interactively ask the user for a domain, auto-prepending https:// if needed,
+/// and save it to .lunar/domain for future sessions.
+fn set_domain() {
+    print!("Enter your domain (e.g., example.com): ");
+    io::stdout().flush().ok();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok();
+    let raw = input.trim().to_string();
+    if raw.is_empty() {
+        println!("Domain not changed.");
+        return;
+    }
+    // Auto-prepend https:// if no protocol is provided
+    let domain = if raw.starts_with("http://") || raw.starts_with("https://") {
+        raw
+    } else {
+        format!("https://{}", raw.trim_start_matches('/'))
+    };
+    if let Some(parent) = Path::new(".lunar/domain").parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Err(e) = fs::write(".lunar/domain", &domain) {
+        eprintln!("Failed to save domain: {}", e);
+    } else {
+        println!("Domain saved as: {}", domain);
+        println!("To use it immediately, run: export LUNAR_SERVE_DOMAIN=\"{}\"", domain);
+        // set_var is unsafe in Rust 2024; allow it for backward compatibility
+        #[allow(unused_unsafe)]
+        unsafe {
+            std::env::set_var("LUNAR_SERVE_DOMAIN", &domain);
+        }
+    }
+}
+
+/// Count the number of pending patches across all projects.
+fn count_pending_patches(map: &TopographyMap) -> usize {
+    let mut count = 0;
+    for proj in &map.projects {
+        if proj.name.is_empty() || proj.path.is_empty() {
+            continue;
+        }
+        let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
+        if !suggest_dir.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&suggest_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let ext = path.extension().and_then(|e| e.to_str());
+                if ext != Some("yaml") && ext != Some("yml") {
+                    continue;
+                }
+                let filename = path.file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if filename.is_empty()
+                    || filename.ends_with(".applied")
+                    || filename.ends_with(".failed")
+                    || filename.ends_with(".diff")
+                {
+                    continue;
+                }
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Detect pending patches on startup and offer to process them interactively.
 async fn auto_probe_and_merge() -> anyhow::Result<()> {
     let map_path = "lunar-map.json";
     if !Path::new(map_path).exists() {
         return Ok(());
     }
-    let map_content = std::fs::read_to_string(map_path)?;
+    let map_content = fs::read_to_string(map_path)?;
     let map_val: TopographyMap = serde_json::from_str(&map_content)?;
 
-    // 1. ai‑todo.json detection
+    // Phase 1: ai-todo.json entries
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let base_path = Path::new(&proj.path);
         let todo_path = base_path.join(".lunar/ai-todo.json");
         if !todo_path.exists() { continue; }
 
-        let todo_content = match std::fs::read_to_string(&todo_path) {
+        let todo_content = match fs::read_to_string(&todo_path) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -86,19 +169,18 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                     let cleaned = extract_patch_content(&patch_str);
                     if let Err(e) = crate::patch::apply_patch_yaml_at(&base_path, &cleaned, true) {
                         eprintln!("Merge failed: {}", e);
-                        eprintln!("The patch file has been left in place for manual review.");
                     } else {
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ All contract changes aligned and map refreshed.\n");
                     }
                 }
-                return Ok(());
+                continue; // keep processing remaining tasks/projects
             }
         }
     }
 
-    // 2. suggestions directory detection with project matching
+    // Phase 2: raw suggestions/ directory patches
     for proj in &map_val.projects {
         if proj.name.is_empty() || proj.path.is_empty() { continue; }
         let suggest_dir = Path::new(&proj.path).join(".lunar/suggestions");
@@ -109,16 +191,20 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
         };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
-
-            // Accept both .yaml and .yml extensions
             let ext = path.extension().and_then(|e| e.to_str());
             if ext != Some("yaml") && ext != Some("yml") { continue; }
+            let filename = path.file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if filename.is_empty()
+                || filename.ends_with(".applied")
+                || filename.ends_with(".failed")
+                || filename.ends_with(".diff")
+            {
+                continue;
+            }
 
-            let filename = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-            if filename.is_empty() { continue; }
-            if filename.ends_with(".applied") || filename.ends_with(".failed") { continue; }
-
-            let content = match std::fs::read_to_string(&path) {
+            let content = match fs::read_to_string(&path) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -137,9 +223,27 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                     .unwrap_or_else(|| proj.path.clone())
             };
 
+            // Generate diff for peer review
+            let diff_path = suggest_dir.join(format!("{}.diff", filename));
+            let interfaces_path = Path::new(&target_path).join(".lunar/interfaces.yml");
+            let current_yml = if interfaces_path.exists() {
+                fs::read_to_string(&interfaces_path).unwrap_or_default()
+            } else {
+                "(no existing interfaces.yml)".to_string()
+            };
+            let mut diff_content = String::new();
+            diff_content.push_str("# AI Patch Review\n\n## Current interfaces.yml\n```yaml\n");
+            diff_content.push_str(&current_yml);
+            diff_content.push_str("\n```\n\n## Proposed Patch\n```yaml\n");
+            diff_content.push_str(&cleaned);
+            diff_content.push_str("\n```\n");
+            let _ = fs::write(&diff_path, diff_content);
+
             println!("\n🌙 LunarAST — Ecosystem Contract Governance\n");
-            println!("  🔔 Detected pending AI patch in suggestions: {}", filename);
+            println!("  🔔 Detected pending AI patch: {}", filename);
             println!("     Target project: {}", target_name);
+            println!("     Diff saved: {:?}", diff_path);
+            println!("     Share this diff with another AI for peer review.");
             print!("     Auto-merge and refresh map? [Y/n]: ");
             io::stdout().flush()?;
             let mut input = String::new();
@@ -149,7 +253,7 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                 match crate::patch::apply_patch_yaml_at(&Path::new(&target_path), &cleaned, true) {
                     Ok(()) => {
                         let applied_name = format!("{}.applied", filename);
-                        let _ = std::fs::rename(&path, suggest_dir.join(applied_name));
+                        let _ = fs::rename(&path, suggest_dir.join(applied_name));
                         println!("📡 Re-compiling topography map...");
                         map(None, None, false, None, true).await?;
                         println!("✓ Patch applied and map refreshed.\n");
@@ -158,42 +262,58 @@ async fn auto_probe_and_merge() -> anyhow::Result<()> {
                         eprintln!("Merge failed: {}", e);
                         eprintln!("The patch has been marked as failed and will be skipped on next run.");
                         let failed_name = format!("{}.failed", filename);
-                        let _ = std::fs::rename(&path, suggest_dir.join(failed_name));
+                        let _ = fs::rename(&path, suggest_dir.join(failed_name));
                     }
                 }
             } else {
-                println!("Skipped. Patch left in suggestions directory.");
+                println!("Skipped. You can merge later from the main menu.");
             }
-            return Ok(());
+            continue; // Continue to next patch
         }
     }
 
     Ok(())
 }
 
-// ── UI helpers (unchanged) ──
+// ── UI helpers ──
 fn print_header(state: &guide::AnalyzeState) {
-    let domain = std::env::var("LUNAR_SERVE_DOMAIN").unwrap_or_else(|_| String::from("(not set)"));
+    let domain = get_domain();
+    let display_domain = if domain.is_empty() { "(not set)".to_string() } else { domain };
     let totp = if Path::new(".lunar/totp.secret").exists() { "✅" } else { "⚠️" };
     let scan = if state.has_data { "🟢 Scanned" } else { "🟡 No data" };
 
     println!("\n🌙 LunarAST — Ecosystem Contract Governance");
     println!("{}", "─".repeat(60));
     println!("📋 {}  |  🌿 {}  |  {}  |  🔐 TOTP {}  |  🌐 {}",
-        state.project_name, state.language, scan, totp, domain);
+        state.project_name, state.language, scan, totp, display_domain);
     println!("{}", "─".repeat(60));
 }
 
 fn print_main_menu(state: &guide::AnalyzeState) {
+    // Notify about pending patches
+    let map_path = "lunar-map.json";
+    if Path::new(map_path).exists() {
+        if let Ok(content) = fs::read_to_string(map_path) {
+            if let Ok(map_val) = serde_json::from_str::<TopographyMap>(&content) {
+                let pending = count_pending_patches(&map_val);
+                if pending > 0 {
+                    println!("  🔔 {} pending AI patch(es) detected. Enter Core → W to review.", pending);
+                }
+            }
+        }
+    }
+
     print_header(state);
     if !state.has_data {
         println!(" 1) Core Operations (scan, health...)");
         println!(" 2) Security (TOTP setup)");
+        println!(" D) Set Domain");
         println!(" 0) Quit");
     } else {
         println!(" 1) Core Operations");
         println!(" 2) Security");
         println!(" 3) Danger (clean all data)");
+        println!(" D) Set Domain");
         println!(" 0) Quit");
     }
     println!("{}", "─".repeat(60));
@@ -206,6 +326,7 @@ fn print_core_menu(state: &guide::AnalyzeState) {
         println!(" 7) Health check");
         println!(" R) Sync repo info from Git");
         println!(" W) Watch for patches");
+        println!(" D) Set Domain");
         println!(" 0) Back");
     } else {
         println!(" 1) Scan project         2) Show changes");
@@ -213,7 +334,7 @@ fn print_core_menu(state: &guide::AnalyzeState) {
         println!(" 5) Launch server        6) Generate map");
         println!(" 7) Health check         8) Stop server");
         println!(" 9) Restart server       R) Sync repo info");
-        println!(" W) Watch for patches");
+        println!(" W) Watch for patches    D) Set Domain");
         println!(" 0) Back");
     }
     println!("{}", "─".repeat(60));
@@ -226,64 +347,65 @@ fn print_security_menu(state: &guide::AnalyzeState) {
         println!(" 2) Visibility Manager");
         println!(" 3) Generate keypair");
     }
+    println!(" D) Set Domain");
     println!(" 0) Back");
     println!("{}", "─".repeat(60));
 }
 
+#[cfg(unix)]
 fn stop_server() -> anyhow::Result<()> {
     let pid_path = ".lunar/lunar-serve.pid";
     let mut found = false;
     if Path::new(pid_path).exists() {
         let pid_str = std::fs::read_to_string(pid_path)?;
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            #[cfg(unix)]
-            {
-                unsafe {
-                    if libc::kill(pid, libc::SIGTERM) == 0 {
-                        found = true;
-                        println!("Sent SIGTERM to PID {}", pid);
-                    }
+            unsafe {
+                if libc::kill(pid, libc::SIGTERM) == 0 {
+                    found = true;
+                    println!("Sent SIGTERM to PID {}", pid);
                 }
             }
         }
     }
     if !found {
-        #[cfg(unix)]
-        {
-            let status = std::process::Command::new("pkill")
-                .args(["-f", "lunar-serve"])
-                .status();
-            match status {
-                Ok(s) if s.success() => {
-                    println!("Stopped lunar-serve via pkill.");
-                    found = true;
-                }
-                Ok(s) => {
-                    anyhow::bail!("pkill returned non-zero status: {}", s);
-                }
-                Err(e) => {
-                    anyhow::bail!("pkill command failed: {}. Ensure lunar-serve is running and you have permissions.", e);
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let status = std::process::Command::new("taskkill")
-                .args(["/F", "/IM", "lunar-serve.exe"])
-                .status();
-            if status.map_or(false, |s| s.success()) {
-                println!("Stopped lunar-serve via taskkill.");
+        let status = std::process::Command::new("pkill")
+            .args(["-f", "lunar-serve"])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                println!("Stopped lunar-serve via pkill.");
                 found = true;
-            } else {
-                anyhow::bail!("taskkill failed. Ensure lunar-serve is running.");
             }
+            Ok(s) => anyhow::bail!("pkill returned non-zero status: {}", s),
+            Err(e) => anyhow::bail!("pkill command failed: {}.", e),
         }
     }
     if found {
         let _ = std::fs::remove_file(pid_path);
         Ok(())
     } else {
-        anyhow::bail!("Could not stop lunar-serve. Try manually: pkill -f lunar-serve")
+        anyhow::bail!("Could not stop lunar-serve.")
+    }
+}
+
+#[cfg(not(unix))]
+fn stop_server() -> anyhow::Result<()> {
+    let pid_path = ".lunar/lunar-serve.pid";
+    if !Path::new(pid_path).exists() {
+        println!("Server is not running (PID file not found).");
+        return Ok(());
+    }
+    let pid_str = std::fs::read_to_string(pid_path)?;
+    let pid: u32 = pid_str.trim().parse()?;
+    let status = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .status()?;
+    if status.success() {
+        println!("Stopped lunar-serve via taskkill.");
+        let _ = std::fs::remove_file(pid_path);
+        Ok(())
+    } else {
+        anyhow::bail!("taskkill failed. Ensure lunar-serve is running.")
     }
 }
 
@@ -336,11 +458,18 @@ pub async fn run() -> ExitCode {
                     println!("Invalid option. Enter 0-3, or h for help.");
                 }
             }
+            "d" => {
+                set_domain();
+                println!("Press Enter to continue...");
+                let mut _wait = String::new();
+                io::stdin().read_line(&mut _wait).ok();
+                show_menu = true;
+            }
             "h" => {
                 state = guide::analyze();
                 show_menu = true;
             }
-            _ => println!("Invalid option. Enter 0-3, or h for help."),
+            _ => println!("Invalid option. Enter 0-3, D, or h for help."),
         }
     }
 }
@@ -362,6 +491,14 @@ async fn core_submenu() {
 
         if input == "0" { return; }
         if input == "h" { show_menu = true; continue; }
+        if input == "d" {
+            set_domain();
+            println!("Press Enter to continue...");
+            let mut _wait = String::new();
+            io::stdin().read_line(&mut _wait).ok();
+            show_menu = true;
+            continue;
+        }
 
         let executed = match (state.has_data, input.as_str()) {
             (false, "1") => Some(scan::execute()),
@@ -416,6 +553,14 @@ async fn security_submenu() {
 
         if input == "0" { return; }
         if input == "h" { show_menu = true; continue; }
+        if input == "d" {
+            set_domain();
+            println!("Press Enter to continue...");
+            let mut _wait = String::new();
+            io::stdin().read_line(&mut _wait).ok();
+            show_menu = true;
+            continue;
+        }
 
         let executed = match (state.has_data, input.as_str()) {
             (_, "1") => Some(setup_totp::run().await.map(|_| ())),
