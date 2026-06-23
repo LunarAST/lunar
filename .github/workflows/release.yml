@@ -1,3 +1,19 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: cargo build --release
+
       - name: Generate SHA256 checksums
         run: sha256sum target/release/lunar > checksums.txt
 
