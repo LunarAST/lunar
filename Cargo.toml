@@ -1,6 +1,6 @@
 [package]
 name = "lunar"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "LunarAST CLI - Static interface contract extraction and comparison"
 
