@@ -7,6 +7,7 @@ pub mod interactive;
 pub mod setup_totp;
 pub mod visibility;
 pub mod sync_visibility;
+pub mod sync_repos;
+pub mod watch;
 pub mod gen;
 pub mod ci144;
-pub mod sync_repos;

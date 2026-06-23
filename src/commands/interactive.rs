@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::path::Path;
 use serde::Deserialize;
 use crate::guide;
-use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_repos};
+use crate::commands::{scan, diff, sync, pull, serve, setup_totp, visibility, sync_repos, watch};
 use crate::map::map;
 use crate::doctor::doctor_check;
 
@@ -210,6 +210,7 @@ fn print_core_menu(state: &guide::AnalyzeState) {
         println!(" 1) Scan project");
         println!(" 7) Health check");
         println!(" R) Sync repo info from Git");
+        println!(" W) Watch for patches");
         println!(" 0) Back");
     } else {
         println!(" 1) Scan project         2) Show changes");
@@ -217,6 +218,7 @@ fn print_core_menu(state: &guide::AnalyzeState) {
         println!(" 5) Launch server        6) Generate map");
         println!(" 7) Health check         8) Stop server");
         println!(" 9) Restart server       R) Sync repo info");
+        println!(" W) Watch for patches");
         println!(" 0) Back");
     }
     println!("{}", "─".repeat(60));
@@ -370,6 +372,7 @@ async fn core_submenu() {
             (false, "1") => Some(scan::execute()),
             (false, "7") => { doctor_check(); Some(Ok(())) },
             (false, "r") => Some(sync_repos::run().await.map(|_| ())),
+            (false, "w") => Some(watch::run().await.map(|_| ())),
 
             (true, "1") => Some(scan::execute()),
             (true, "2") => Some(diff::execute()),
@@ -381,6 +384,7 @@ async fn core_submenu() {
             (true, "8") => Some(stop_server()),
             (true, "9") => Some(restart_server()),
             (true, "r") => Some(sync_repos::run().await.map(|_| ())),
+            (true, "w") => Some(watch::run().await.map(|_| ())),
 
             _ => {
                 println!("Invalid option. Enter a valid menu option.");
