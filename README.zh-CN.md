@@ -1,7 +1,7 @@
 # lunar
 **LunarAST 命令行工具 — 接口契约静态提取、差异比对与 GitOps 协同同步**
 
-`lunar` 是 LunarAST 生态的核心命令行引擎，基于 Rust 开发，自动化完成项目初始化、代码抽象语法树静态扫描、契约差异诊断，以及**零信任交互式AI补丁合并**；全程无需记忆命令、无需手动复制粘贴文件。
+`lunar` 是 LunarAST 生态的核心命令行引擎，基于 Rust 开发，可自动化完成项目初始化、代码抽象语法树静态扫描、契约差异诊断，以及**零信任交互式AI补丁合并**；全程无需记忆命令、无需手动复制粘贴文件。
 
 ---
 
@@ -37,6 +37,22 @@ lunar/
 
 ## ⚡ 快速上手（开箱即用交互体验）
 ### 1. 安装
+#### 方案A：下载预编译二进制包（速度最快）
+GitHub Releases 页面提供 **Linux amd64** 架构预编译程序：
+1. 从最新版本下载 `lunar` 主程序与校验文件 `checksums.txt`
+2. （推荐）校验文件完整性：
+```bash
+sha256sum -c checksums.txt
+```
+3. 赋予程序执行权限并移动至系统环境变量目录：
+```bash
+chmod +x lunar
+sudo mv lunar /usr/local/bin/
+```
+
+> 备注：当前仅提供 Linux amd64 二进制包。macOS、Windows、ARM 架构设备请参考下方源码编译方案。
+
+#### 方案B：本地源码编译安装
 进入 `/opt/LunarAST/lunar` 目录，编译并全局安装：
 ```bash
 cargo install --path .
@@ -48,9 +64,9 @@ cargo install --path .
 lunar
 ```
 
-#### 启动后信息面板展示内容：
+#### 启动信息面板展示内容：
 * **当前服务端口**：读取配置或环境变量 `LUNAR_SERVE_PORT`，默认 8787，启动时可二次确认
-* **对外域名**：自动解析服务公网地址（示例：`shturl.cc/GCplkeKDVcSMdgN4kC5wvGBL4zvqOMFnYRr4wIA9prZGTLgbC`，无配置则回退本地地址）
+* **对外域名**：自动解析服务公网地址（示例：`shturl.cc/e58j1nxquy62B`，无配置则回退本地地址）；可通过交互菜单选项 `D` 或环境变量 `LUNAR_SERVE_DOMAIN` 自定义
 * **工作区根目录**：当前终端所在物理路径
 * **TOTP状态**：展示双因素认证密钥是否已配置
 
@@ -92,17 +108,17 @@ lunar sync-repos
 读取 `lunar-map.json` 获取全部项目路径，从每个项目本地 `.git` 配置中提取 **GitHub 所有者、仓库名、当前分支**，写入 `repos.json`；生成LCT加密令牌时会自动修正分支信息。
 
 ### 4. 服务进程管理（交互菜单内操作）
-进入交互菜单且扫描数据就绪后：
+扫描数据加载完成后，在交互菜单执行：
 - 按 `5` 启动 `lunar-serve` 服务
 - 按 `8` 停止运行中的服务（通过PID文件发送SIGTERM优雅关闭）
 - 按 `9` 重启服务
 
-无需手动执行 `pkill -f lunar-serve` 杀进程。
+无需手动执行 `pkill -f lunar-serve` 强制杀进程。
 
 ### 5. 新增环境变量
 - `GITHUB_TOKEN` — GitHub个人访问令牌，用于同步仓库可见性（可选）
 - `LUNAR_SERVE_PORT` — 自定义分发服务端口（默认8787）
-- `LUNAR_SERVE_DOMAIN` — 生成令牌链接使用的公网域名（示例：`shturl.cc/GCplkeKDVcSMdgN4kC5wvGBL4zvqOMFnYRr4wIA9prZGTLgbC`）
+- `LUNAR_SERVE_DOMAIN` — 生成令牌链接使用的公网域名（示例：`shturl.cc/e58j1nxquy62B`）
 
 ---
 

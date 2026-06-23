@@ -41,6 +41,24 @@ lunar/
 ## ⚡ Quick Start (Out-of-the-Box UX)
 
 ### 1. Installation
+
+#### Option A: Download a pre-built binary (fastest)
+Pre-built binaries are available for **Linux amd64** on the [GitHub Releases](https://github.com/LunarAST/lunar/releases) page.
+
+1. Download `lunar` and the accompanying `checksums.txt` from the latest release.
+2. (Recommended) Verify integrity:
+   ```bash
+   sha256sum -c checksums.txt
+   ```
+3. Make the binary executable and move it to a directory in your `PATH`:
+   ```bash
+   chmod +x lunar
+   sudo mv lunar /usr/local/bin/
+   ```
+
+> **Note**: Currently only Linux amd64 is provided. For macOS, Windows, or ARM systems, please compile from source (see below).
+
+#### Option B: Compile from source
 In the `/opt/LunarAST/lunar` directory, compile and install globally:
 ```bash
 cargo install --path .
@@ -54,7 +72,7 @@ lunar
 
 #### The Parameter Dashboard on Boot:
 * **Active Port**: Loaded from configuration or `LUNAR_SERVE_PORT` (defaults to `8787` with interactive confirmation).
-* **Active Domain**: Resolves to your primary server address (e.g., `https://lunar.aifify.com` or local fallback).
+* **Active Domain**: Resolves to your primary server address (e.g., `https://your-domain.com` or local fallback). Can be configured via the interactive menu (`D`) or the `LUNAR_SERVE_DOMAIN` environment variable.
 * **Workspace Root**: Your current terminal physical path.
 * **TOTP Status**: Shows whether the two-factor authentication secret is configured.
 
@@ -107,7 +125,7 @@ No more manual `pkill -f lunar-serve`.
 ### 5. New Environment Variables
 - `GITHUB_TOKEN` – Personal access token for syncing visibility from GitHub (optional)
 - `LUNAR_SERVE_PORT` – Override default serve port (8787)
-- `LUNAR_SERVE_DOMAIN` – Public domain used in token URLs (e.g., `https://lunar.aifify.com`)
+- `LUNAR_SERVE_DOMAIN` – Public domain used in token URLs (e.g., `https://your-domain.com`)
 
 ---
 
