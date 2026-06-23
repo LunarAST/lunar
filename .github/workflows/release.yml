@@ -12,37 +12,31 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. 将当前仓库 (lunar) 拉取到子目录 'lunar' 中
       - name: Checkout lunar
         uses: actions/checkout@v5
         with:
           path: lunar
 
-      # 2. 将依赖仓库 (lunar-interface) 拉取到同级的 'lunar-interface' 中
       - name: Checkout lunar-interface
         uses: actions/checkout@v5
         with:
           repository: LunarAST/lunar-interface
           path: lunar-interface
-          # 如果 lunar-interface 是【私有仓库】，请取消下行注释并配置你的 PAT Token Secret
-          # token: ${{ secrets.YOUR_PAT_TOKEN }}
 
-      # 3. 设置 Rust 环境
       - name: Set up Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # 4. 在 'lunar' 子目录中执行编译
       - name: Build release binary
         run: cargo build --release
         working-directory: lunar
 
-      # 5. 生成校验和
       - name: Generate SHA256 checksums
         run: sha256sum target/release/lunar > checksums.txt
         working-directory: lunar
 
-      # 6. 上传校验和至 Release
-      - name: Upload checksums to release
+      - name: Upload binary and checksums to release
         uses: softprops/action-gh-release@v3
         with:
-          files: lunar/checksums.txt
+          files: |
+            lunar/target/release/lunar
+            lunar/checksums.txt
