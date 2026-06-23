@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build release binary
         run: cargo build --release
@@ -18,6 +18,6 @@ jobs:
         run: sha256sum target/release/lunar > checksums.txt
 
       - name: Upload checksums to release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: checksums.txt
